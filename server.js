@@ -65,6 +65,20 @@ app.get('/recomendados', async (req, res) => {
   }
 });
 
+// GET /recomendados/total - Obtener total de recomendados
+app.get('/recomendados/total', async (req, res) => {
+  try {
+    const [rows] = await db.execute('SELECT COUNT(*) as total FROM recomendados');
+
+    res.json({
+      total: rows[0].total,
+      trend: 'equal' // Placeholder para lógica de tendencia
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // GET /recomendados/:cedula - Obtener recomendado por cédula
 app.get('/recomendados/:cedula', async (req, res) => {
   try {
@@ -231,6 +245,32 @@ app.get('/lideres/por-recomendado', async (req, res) => {
     );
     
     res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /lideres/distribution - Distribución de líderes
+app.get('/lideres/distribution', async (req, res) => {
+  try {
+    const [rows] = await db.execute(
+      'SELECT lider_identificacion, COUNT(*) AS total_votantes FROM votantes GROUP BY lider_identificacion'
+    );
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /lideres/total - Total de líderes
+app.get('/lideres/total', async (req, res) => {
+  try {
+    const [rows] = await db.execute('SELECT COUNT(*) as total FROM lideres');
+
+    res.json({
+      total: rows[0].total,
+      trend: 'equal' // Placeholder para lógica de tendencia
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -406,18 +446,6 @@ app.delete('/lideres/:cedula', async (req, res) => {
   }
 });
 
-// GET /lideres/distribution - Distribución de líderes
-app.get('/lideres/distribution', async (req, res) => {
-  try {
-    const [rows] = await db.execute(
-      'SELECT lider_identificacion, COUNT(*) AS total_votantes FROM votantes GROUP BY lider_identificacion'
-    );
-    res.json(rows);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // ==============================
 //          VOTANTES
 // ==============================
@@ -481,6 +509,260 @@ app.put('/votantes/reasignar', async (req, res) => {
     
     res.json({ message: 'Operación de reasignación completada con éxito' });
   } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /votantes/por-lider - Obtener votantes por líder
+app.get('/votantes/por-lider', async (req, res) => {
+  try {
+    const { lider } = req.query;
+
+    // Obtener votantes del líder
+    const [votantes] = await db.execute(
+      `SELECT identificacion, nombre, apellido, direccion, celular
+       FROM votantes
+       WHERE lider_identificacion = ?`,
+      [lider]
+    );
+
+    if (votantes.length === 0) {
+      return res.status(404).json({ error: 'No se encontraron votantes para este líder' });
+    }
+
+    res.json(votantes);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /votantes/por-lider-detalle - Obtener información detallada del líder y sus votantes
+app.get('/votantes/por-lider-detalle', async (req, res) => {
+  try {
+    const { lider } = req.query;
+
+    // Obtener información del líder
+    const [liderInfo] = await db.execute(
+      'SELECT nombre, apellido, identificacion FROM lideres WHERE identificacion = ?',
+      [lider]
+    );
+
+    if (liderInfo.length === 0) {
+      return res.status(404).json({ error: 'No se encontró un líder con esa identificación' });
+    }
+
+    // Obtener votantes del líder
+    const [votantes] = await db.execute(
+      `SELECT identificacion, nombre, apellido, direccion, celular
+       FROM votantes
+       WHERE lider_identificacion = ?`,
+      [lider]
+    );
+
+    const leader = liderInfo[0];
+    const leaderName = `${leader.nombre} ${leader.apellido}`;
+
+    res.json({
+      lider: {
+        nombre: leaderName,
+        identificacion: leader.identificacion,
+        total_votantes: votantes.length
+      },
+      votantes: votantes
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /votantes/total - Total de votantes
+app.get('/votantes/total', async (req, res) => {
+  try {
+    const [rows] = await db.execute('SELECT COUNT(*) as total FROM votantes');
+
+    res.json({
+      total: rows[0].total,
+      trend: 'equal' // Placeholder para lógica de tendencia
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /votantes/promedio_lider - Promedio de votantes por líder
+app.get('/votantes/promedio_lider', async (req, res) => {
+  try {
+    // Contar votantes totales
+    const [votantesResult] = await db.execute('SELECT COUNT(*) as total_votantes FROM votantes');
+    const totalVotantes = votantesResult[0].total_votantes;
+
+    // Contar líderes totales
+    const [lideresResult] = await db.execute('SELECT COUNT(*) as total_lideres FROM lideres');
+    const totalLideres = lideresResult[0].total_lideres;
+
+    const promedio = totalLideres === 0 ? 0 : Math.round((totalVotantes / totalLideres) * 100) / 100;
+
+    res.json({
+      promedio: promedio,
+      trend: 'equal' // Placeholder para lógica de tendencia
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /votantes/tendencia_mensual - Tendencia mensual de votantes
+app.get('/votantes/tendencia_mensual', async (req, res) => {
+  try {
+    // Nota: Asumiendo que existe una columna 'created_at' en la tabla votantes
+    // Si no existe, necesitarás ajustar esta consulta o crear la columna
+    const [rows] = await db.execute(`
+      SELECT DATE(created_at) AS fecha, COUNT(*) AS conteo
+      FROM votantes
+      WHERE created_at >= CURDATE() - INTERVAL 30 DAY
+      GROUP BY DATE(created_at)
+      ORDER BY fecha ASC
+    `);
+
+    const tendencia = rows.map(row => ({
+      date: row.fecha.toISOString().split('T')[0],
+      count: row.conteo
+    }));
+
+    res.json(tendencia);
+  } catch (error) {
+    // Si la columna created_at no existe, retornar array vacío
+    if (error.message.includes('created_at')) {
+      res.json([]);
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+// POST /votantes/upload_csv - Cargar votantes desde CSV/Excel
+app.post('/votantes/upload_csv', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No se subió ningún archivo' });
+    }
+
+    // Leer el archivo Excel
+    const workbook = XLSX.readFile(req.file.path);
+    const sheetName = workbook.SheetNames[0];
+    const data = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]);
+
+    // Verificar columnas requeridas
+    const requiredColumns = ['Cedula', 'Nombres', 'Apellidos', 'Direccion', 'Celular', 'Lider'];
+    const hasRequiredColumns = requiredColumns.every(col =>
+      data.length > 0 && data[0].hasOwnProperty(col)
+    );
+
+    if (!hasRequiredColumns) {
+      return res.status(400).json({ error: 'El archivo Excel no tiene las columnas requeridas' });
+    }
+
+    let inserted = 0;
+    const duplicados = [];
+
+    const connection = await db.getConnection();
+    try {
+      await connection.beginTransaction();
+
+      for (const row of data) {
+        const cedula = String(row.Cedula || 0).trim();
+        const nombres = String(row.Nombres || '').toUpperCase().trim();
+        const apellidos = String(row.Apellidos || '').toUpperCase().trim();
+        const direccion = String(row.Direccion || '').toUpperCase().trim();
+        const celular = String(row.Celular || '0').toUpperCase().trim();
+        const lider = String(row.Lider || 0).trim();
+
+        // Verificar si ya existe
+        const [existing] = await connection.execute(
+          'SELECT * FROM votantes WHERE identificacion = ?',
+          [cedula]
+        );
+
+        if (existing.length > 0) {
+          const existingVotante = existing[0];
+          let leaderNombre = null;
+
+          if (existingVotante.lider_identificacion) {
+            const [leaderInfo] = await connection.execute(
+              'SELECT nombre FROM lideres WHERE identificacion = ?',
+              [existingVotante.lider_identificacion]
+            );
+            leaderNombre = leaderInfo.length > 0 ? leaderInfo[0].nombre : null;
+          }
+
+          duplicados.push({
+            identificacion: cedula,
+            nombre: existingVotante.nombre,
+            apellido: existingVotante.apellido,
+            direccion: existingVotante.direccion,
+            celular: existingVotante.celular,
+            lider_identificacion: existingVotante.lider_identificacion,
+            lider_nombre: leaderNombre,
+            nombre_intentado: nombres,
+            apellido_intentado: apellidos,
+            direccion_intentado: direccion,
+            celular_intentado: celular,
+            lider_intentado: lider
+          });
+        } else {
+          // Verificar que el líder existe
+          const [leaderExists] = await connection.execute(
+            'SELECT COUNT(*) as count FROM lideres WHERE identificacion = ?',
+            [lider]
+          );
+
+          if (leaderExists[0].count === 0) {
+            duplicados.push({
+              identificacion: cedula,
+              nombre: nombres,
+              apellido: apellidos,
+              direccion: direccion,
+              celular: celular,
+              error: `Líder con identificación ${lider} no existe`
+            });
+          } else {
+            // Insertar nuevo votante
+            await connection.execute(
+              `INSERT INTO votantes
+               (identificacion, nombre, apellido, direccion, celular, email, lider_identificacion)
+               VALUES (?, ?, ?, ?, ?, ?, ?)`,
+              [cedula, nombres, apellidos, direccion, celular, null, lider]
+            );
+            inserted++;
+          }
+        }
+      }
+
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+
+    // Eliminar archivo temporal
+    fs.unlinkSync(req.file.path);
+
+    res.status(201).json({
+      message: 'Carga completada',
+      insertados: inserted,
+      duplicados: duplicados
+    });
+  } catch (error) {
+    // Limpiar archivo en caso de error
+    if (req.file && req.file.path) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (unlinkError) {
+        console.error('Error eliminando archivo temporal:', unlinkError.message);
+      }
+    }
     res.status(500).json({ error: error.message });
   }
 });
@@ -626,326 +908,39 @@ app.delete('/votantes/:identificacion', async (req, res) => {
   }
 });
 
-// GET /votantes/por-lider - Obtener votantes por líder
-app.get('/votantes/por-lider', async (req, res) => {
-  try {
-    const { lider } = req.query;
-    
-    // Obtener votantes del líder
-    const [votantes] = await db.execute(
-      `SELECT identificacion, nombre, apellido, direccion, celular
-       FROM votantes
-       WHERE lider_identificacion = ?`,
-      [lider]
-    );
-    
-    if (votantes.length === 0) {
-      // Verificar si el líder existe
-      const [liderInfo] = await connection.execute(
-        'SELECT identificacion, nombre, apellido FROM lideres WHERE identificacion = ?',
-        [lider]
-      );
-      
-      if (liderInfo.length > 0) {
-        return res.json({ lider: liderInfo[0], votantes: [] });
-      } else {
-        return res.status(404).json({ error: 'No se encontró un líder con esa identificación.' });
-      }
-    }
-    
-    // Obtener información del líder
-    const [liderInfo] = await connection.execute(
-      'SELECT identificacion, nombre, apellido FROM lideres WHERE identificacion = ?',
-      [lider]
-    );
-    
-    res.json({ lider: liderInfo[0], votantes });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// GET /votantes/por-lider-detalle - Obtener votantes por líder con detalles
-app.get('/votantes/por-lider-detalle', async (req, res) => {
-  try {
-    const { lider } = req.query;
-    
-    // Obtener información del líder
-    const [liderInfo] = await db.execute(
-      'SELECT nombre, apellido, identificacion FROM lideres WHERE identificacion = ?',
-      [lider]
-    );
-    
-    if (liderInfo.length === 0) {
-      return res.status(404).json({ error: 'No se encontró un líder con esa identificación' });
-    }
-    
-    // Obtener votantes del líder
-    const [votantes] = await connection.execute(
-      `SELECT 
-        identificacion AS votante_identificacion,
-        nombre AS votante_nombre,
-        apellido AS votante_apellido,
-        direccion,
-        celular
-       FROM votantes
-       WHERE lider_identificacion = ?`,
-      [lider]
-    );
-    
-    res.json({ lider: liderInfo[0], votantes });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// POST /votantes/upload_csv - Cargar votantes desde Excel
-app.post('/votantes/upload_csv', upload.single('file'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No se envió ningún archivo' });
-    }
-    
-    if (!req.file.filename.endsWith('.xlsx') && !req.file.filename.endsWith('.xls')) {
-      return res.status(400).json({ error: 'El archivo debe tener una extensión .xlsx o .xls' });
-    }
-    
-    // Leer archivo Excel
-    const workbook = XLSX.readFile(req.file.path);
-    const sheetName = workbook.SheetNames[0];
-    const worksheet = workbook.Sheets[sheetName];
-    const data = XLSX.utils.sheet_to_json(worksheet);
-    
-    const requiredColumns = ['Cedula', 'Nombres', 'Apellidos', 'Celular', 'Direccion', 'Lider'];
-    const firstRow = data[0] || {};
-    const hasRequiredColumns = requiredColumns.every(col => col in firstRow);
-    
-    if (!hasRequiredColumns) {
-      return res.status(400).json({ error: 'El archivo Excel no tiene las columnas requeridas' });
-    }
-    
-    let inserted = 0;
-    const duplicados = [];
-
-    const connection = await db.getConnection();
-    try {
-      await connection.beginTransaction();
-
-      for (const row of data) {
-        const cedula = String(row.Cedula || 0).trim();
-        const nombres = String(row.Nombres || '').toUpperCase().trim();
-        const apellidos = String(row.Apellidos || '').toUpperCase().trim();
-        const direccion = String(row.Direccion || '').toUpperCase().trim();
-        const celular = String(row.Celular || '0').toUpperCase().trim();
-        const lider = String(row.Lider || 0).trim();
-
-        // Verificar si ya existe
-        const [existing] = await connection.execute(
-          'SELECT * FROM votantes WHERE identificacion = ?',
-          [cedula]
-        );
-
-        if (existing.length > 0) {
-          const existingVotante = existing[0];
-          let leaderNombre = null;
-
-          if (existingVotante.lider_identificacion) {
-            const [leaderInfo] = await connection.execute(
-              'SELECT nombre FROM lideres WHERE identificacion = ?',
-              [existingVotante.lider_identificacion]
-            );
-            leaderNombre = leaderInfo.length > 0 ? leaderInfo[0].nombre : null;
-          }
-
-          duplicados.push({
-            identificacion: cedula,
-            nombre: existingVotante.nombre,
-            apellido: existingVotante.apellido,
-            direccion: existingVotante.direccion,
-            celular: existingVotante.celular,
-            lider_identificacion: existingVotante.lider_identificacion,
-            lider_nombre: leaderNombre,
-            nombre_intentado: nombres,
-            apellido_intentado: apellidos,
-            direccion_intentado: direccion,
-            celular_intentado: celular,
-            lider_intentado: lider
-          });
-        } else {
-          // Verificar que el líder existe
-          const [leaderExists] = await connection.execute(
-            'SELECT COUNT(*) as count FROM lideres WHERE identificacion = ?',
-            [lider]
-          );
-
-          if (leaderExists[0].count === 0) {
-            duplicados.push({
-              identificacion: cedula,
-              nombre: nombres,
-              apellido: apellidos,
-              direccion: direccion,
-              celular: celular,
-              error: `Líder con identificación ${lider} no existe`
-            });
-          } else {
-            // Insertar nuevo votante
-            await connection.execute(
-              `INSERT INTO votantes
-               (identificacion, nombre, apellido, direccion, celular, email, lider_identificacion)
-               VALUES (?, ?, ?, ?, ?, ?, ?)`,
-              [cedula, nombres, apellidos, direccion, celular, null, lider]
-            );
-            inserted++;
-          }
-        }
-      }
-
-      await connection.commit();
-    } catch (error) {
-      await connection.rollback();
-      throw error;
-    } finally {
-      connection.release();
-    }
-    
-    // Eliminar archivo temporal
-    fs.unlinkSync(req.file.path);
-    
-    res.status(201).json({
-      message: 'Carga completada',
-      insertados: inserted,
-      duplicados: duplicados
-    });
-  } catch (error) {
-    res.status(500).json({ error: `Error al procesar el archivo: ${error.message}` });
-  }
-});
-
 // ==============================
 //    DASHBOARD Y REPORTES
 // ==============================
 
-// GET /votantes/total - Total de votantes
-app.get('/votantes/total', async (req, res) => {
-  try {
-    const [rows] = await db.execute('SELECT COUNT(*) as total FROM votantes');
-    
-    res.json({
-      total: rows[0].total,
-      trend: 'equal' // Placeholder para lógica de tendencia
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// GET /lideres/total - Total de líderes
-app.get('/lideres/total', async (req, res) => {
-  try {
-    const [rows] = await db.execute('SELECT COUNT(*) as total FROM lideres');
-    
-    res.json({
-      total: rows[0].total,
-      trend: 'equal' // Placeholder para lógica de tendencia
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// GET /recomendados/total - Total de recomendados
-app.get('/recomendados/total', async (req, res) => {
-  try {
-    const [rows] = await db.execute('SELECT COUNT(*) as total FROM recomendados');
-    
-    res.json({
-      total: rows[0].total,
-      trend: 'equal' // Placeholder para lógica de tendencia
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// GET /votantes/promedio_lider - Promedio de votantes por líder
-app.get('/votantes/promedio_lider', async (req, res) => {
-  try {
-    // Contar votantes totales
-    const [votantesResult] = await db.execute('SELECT COUNT(*) as total_votantes FROM votantes');
-    const totalVotantes = votantesResult[0].total_votantes;
-
-    // Contar líderes totales
-    const [lideresResult] = await db.execute('SELECT COUNT(*) as total_lideres FROM lideres');
-    const totalLideres = lideresResult[0].total_lideres;
-    
-    const promedio = totalLideres === 0 ? 0 : Math.round((totalVotantes / totalLideres) * 100) / 100;
-    
-    res.json({
-      promedio: promedio,
-      trend: 'equal' // Placeholder para lógica de tendencia
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// GET /votantes/tendencia_mensual - Tendencia mensual de votantes
-app.get('/votantes/tendencia_mensual', async (req, res) => {
-  try {
-    // Nota: Asumiendo que existe una columna 'created_at' en la tabla votantes
-    // Si no existe, necesitarás ajustar esta consulta o crear la columna
-    const [rows] = await db.execute(`
-      SELECT DATE(created_at) AS fecha, COUNT(*) AS conteo
-      FROM votantes
-      WHERE created_at >= CURDATE() - INTERVAL 30 DAY
-      GROUP BY DATE(created_at)
-      ORDER BY fecha ASC
-    `);
-    
-    const tendencia = rows.map(row => ({
-      date: row.fecha.toISOString().split('T')[0],
-      count: row.conteo
-    }));
-    
-    res.json(tendencia);
-  } catch (error) {
-    // Si la columna created_at no existe, retornar array vacío
-    if (error.message.includes('created_at')) {
-      res.json([]);
-    } else {
-      res.status(500).json({ error: error.message });
-    }
-  }
-});
-
 // Ruta de prueba
 app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'OK', 
+  res.json({
+    status: 'OK',
     message: 'Backend Node.js funcionando correctamente',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development'
   });
 });
 
+
 // Manejo de errores global
 app.use((error, req, res, next) => {
   console.error('Error no manejado:', error);
-  res.status(500).json({ 
+  res.status(500).json({
     error: 'Error interno del servidor',
-    message: process.env.NODE_ENV === 'development' ? error.message : 'Error interno'
+    message: process.env.NODE_ENV === 'development' ? error.message : 'Algo salió mal'
   });
 });
 
-// Manejo de rutas no encontradas
+// Ruta 404 para rutas no encontradas
 app.use('*', (req, res) => {
-  res.status(404).json({ 
+  res.status(404).json({
     error: 'Ruta no encontrada',
-    path: req.originalUrl 
+    message: `La ruta ${req.method} ${req.originalUrl} no existe`
   });
 });
 
-// Manejar el cierre graceful del pool de conexiones
+// Graceful shutdown
 process.on('SIGTERM', async () => {
   console.log('Cerrando pool de conexiones...');
   await db.end();
