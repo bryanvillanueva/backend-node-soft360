@@ -130,7 +130,6 @@ app.put('/recomendados/:old_id', async (req, res) => {
   try {
     const oldId = req.params.old_id;
     const { 
-      original_identificacion = oldId,
       identificacion: newId,
       nombre = '',
       apellido = '',
@@ -139,11 +138,11 @@ app.put('/recomendados/:old_id', async (req, res) => {
     } = req.body;
     
     await connection.beginTransaction();
-    
+
     // Verificar que existe
     const [existing] = await connection.execute(
       'SELECT COUNT(*) as count FROM recomendados WHERE identificacion = ?',
-      [original_identificacion]
+      [oldId]
     );
     
     if (existing[0].count === 0) {
@@ -156,22 +155,32 @@ app.put('/recomendados/:old_id', async (req, res) => {
       `UPDATE recomendados 
        SET identificacion = ?, nombre = ?, apellido = ?, celular = ?, email = ? 
        WHERE identificacion = ?`,
-      [newId, nombre.toUpperCase(), apellido.toUpperCase(), celular.toUpperCase(), email.toUpperCase(), original_identificacion]
+      [newId, nombre.toUpperCase(), apellido.toUpperCase(), celular.toUpperCase(), email.toUpperCase(), oldId]
     );
-    
+
+    // Si también existe como líder, actualizar sus datos
+    await connection.execute(
+      `UPDATE lideres
+       SET identificacion = ?, nombre = ?, apellido = ?, celular = ?, email = ?
+       WHERE identificacion = ?`,
+      [newId, nombre.toUpperCase(), apellido.toUpperCase(), celular.toUpperCase(), email.toUpperCase(), oldId]
+    );
+
     // Si cambió el ID, actualizar referencias en líderes
-    if (original_identificacion !== newId) {
+    if (oldId !== newId) {
       await connection.execute(
         'UPDATE lideres SET recomendado_identificacion = ? WHERE recomendado_identificacion = ?',
-        [newId, original_identificacion]
+        [newId, oldId]
       );
     }
-    
+
     await connection.commit();
-    res.json({ message: 'Recomendado y líderes asociados actualizados con éxito' });
+    res.json({ message: 'Recomendado (y líder si aplica) actualizado con éxito' });
   } catch (error) {
     await connection.rollback();
     res.status(500).json({ error: error.message });
+  } finally {
+    connection.release();
   }
 });
 
@@ -411,7 +420,15 @@ app.put('/lideres/:old_id', async (req, res) => {
         oldId
       ]
     );
-    
+
+    // Si también existe como recomendado, actualizar sus datos
+    await connection.execute(
+      `UPDATE recomendados
+       SET identificacion = ?, nombre = ?, apellido = ?, celular = ?, email = ?
+       WHERE identificacion = ?`,
+      [newId, nombre.toUpperCase(), apellido.toUpperCase(), celular.toUpperCase(), email.toUpperCase(), oldId]
+    );
+
     // Si cambió el ID, actualizar referencias en votantes
     if (oldId !== newId) {
       await connection.execute(
@@ -421,10 +438,12 @@ app.put('/lideres/:old_id', async (req, res) => {
     }
     
     await connection.commit();
-    res.json({ message: 'Líder y votantes asociados actualizados con éxito' });
+    res.json({ message: 'Líder (y recomendado si aplica) actualizado con éxito' });
   } catch (error) {
     await connection.rollback();
     res.status(500).json({ error: error.message });
+  } finally {
+    connection.release();
   }
 });
 
