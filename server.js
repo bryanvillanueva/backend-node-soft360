@@ -558,7 +558,7 @@ app.get('/votantes/por-lider-detalle', async (req, res) => {
     const { lider } = req.query;
 
     const [liderInfo] = await db.execute(
-      'SELECT nombre, apellido, identificacion, direccion, celular FROM lideres WHERE identificacion = ?',
+      'SELECT nombre, apellido, identificacion, celular FROM lideres WHERE identificacion = ?',
       [lider]
     );
 
