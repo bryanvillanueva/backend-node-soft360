@@ -513,35 +513,12 @@ app.put('/votantes/reasignar', async (req, res) => {
   }
 });
 
-// GET /votantes/por-lider - Obtener votantes por líder
+// GET /votantes/por-lider - Obtener votantes por líder (con info básica del líder)
 app.get('/votantes/por-lider', async (req, res) => {
   try {
     const { lider } = req.query;
 
-    // Obtener votantes del líder
-    const [votantes] = await db.execute(
-      `SELECT identificacion, nombre, apellido, direccion, celular
-       FROM votantes
-       WHERE lider_identificacion = ?`,
-      [lider]
-    );
-
-    if (votantes.length === 0) {
-      return res.status(404).json({ error: 'No se encontraron votantes para este líder' });
-    }
-
-    res.json(votantes);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// GET /votantes/por-lider-detalle - Obtener información detallada del líder y sus votantes
-app.get('/votantes/por-lider-detalle', async (req, res) => {
-  try {
-    const { lider } = req.query;
-
-    // Obtener información del líder
+    // Buscar líder
     const [liderInfo] = await db.execute(
       'SELECT nombre, apellido, identificacion FROM lideres WHERE identificacion = ?',
       [lider]
@@ -568,12 +545,52 @@ app.get('/votantes/por-lider-detalle', async (req, res) => {
         identificacion: leader.identificacion,
         total_votantes: votantes.length
       },
-      votantes: votantes
+      votantes
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
+
+// GET /votantes/por-lider-detalle - Igual que el anterior, pero podría incluir más detalle del líder
+app.get('/votantes/por-lider-detalle', async (req, res) => {
+  try {
+    const { lider } = req.query;
+
+    const [liderInfo] = await db.execute(
+      'SELECT nombre, apellido, identificacion, direccion, celular FROM lideres WHERE identificacion = ?',
+      [lider]
+    );
+
+    if (liderInfo.length === 0) {
+      return res.status(404).json({ error: 'No se encontró un líder con esa identificación' });
+    }
+
+    const [votantes] = await db.execute(
+      `SELECT identificacion, nombre, apellido, direccion, celular
+       FROM votantes
+       WHERE lider_identificacion = ?`,
+      [lider]
+    );
+
+    const leader = liderInfo[0];
+    const leaderName = `${leader.nombre} ${leader.apellido}`;
+
+    res.json({
+      lider: {
+        nombre: leaderName,
+        identificacion: leader.identificacion,
+        direccion: leader.direccion,
+        celular: leader.celular,
+        total_votantes: votantes.length
+      },
+      votantes
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 
 // GET /votantes/total - Total de votantes
 app.get('/votantes/total', async (req, res) => {
