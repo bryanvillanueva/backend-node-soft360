@@ -46,38 +46,8 @@ const dbConfig = {
 
 const db = mysql.createPool(dbConfig);
 
-// Función para obtener conexión a la base de datos (usando pool)
-async function getDbConnection() {
-  try {
-    console.log('Usando pool de conexiones a la base de datos');
-    return db;
-  } catch (error) {
-    console.error('Error al obtener conexión del pool:', error.message);
-    throw error;
-  }
-}
 
-// Endpoint para subir y procesar PDFs
-app.post('/upload_pdf', upload.single('file'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No se envió ningún archivo' });
-    }
 
-    // Aquí deberías importar o implementar tu función process_pdf
-    // const { process_pdf } = require('./extractor');
-    // const { highlighted_text, total_count } = await process_pdf(req.file.path);
-    
-    // Por ahora, retorno un placeholder
-    res.json({
-      highlighted_text: 'Texto procesado del PDF',
-      total_count: 0,
-      message: 'Funcionalidad de PDF pendiente de implementar'
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
 
 // ==============================
 //        RECOMENDADOS
@@ -987,9 +957,7 @@ process.on('SIGINT', async () => {
 
 // Iniciar servidor
 app.listen(port, () => {
-  console.log(`🚀 Servidor corriendo en http://localhost:${port}`);
-  console.log(`📊 Health check disponible en http://localhost:${port}/health`);
-  console.log(`🔧 Ambiente: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🚀 Servidor corriendo en puerto:${port}`);
   console.log(`💾 Pool de conexiones configurado con ${dbConfig.connectionLimit} conexiones máximas`);
 });
 
