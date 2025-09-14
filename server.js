@@ -56,8 +56,7 @@ const db = mysql.createPool(dbConfig);
 // GET /recomendados - Obtener todos los recomendados
 app.get('/recomendados', async (req, res) => {
   try {
-    const connection = await getDbConnection();
-    const [rows] = await connection.execute(
+    const [rows] = await db.execute(
       'SELECT identificacion, nombre, apellido, celular, email FROM recomendados'
     );
     res.json(rows);
@@ -69,8 +68,7 @@ app.get('/recomendados', async (req, res) => {
 // GET /recomendados/:cedula - Obtener recomendado por cédula
 app.get('/recomendados/:cedula', async (req, res) => {
   try {
-    const connection = await getDbConnection();
-    const [rows] = await connection.execute(
+    const [rows] = await db.execute(
       'SELECT identificacion, nombre, apellido FROM recomendados WHERE identificacion = ?',
       [req.params.cedula]
     );
@@ -90,20 +88,18 @@ app.post('/recomendados', async (req, res) => {
   try {
     const { identificacion, nombre = '', apellido = '', celular = '', email = '' } = req.body;
     
-    const connection = await getDbConnection();
-    
     // Verificar si ya existe
-    const [existing] = await connection.execute(
+    const [existing] = await db.execute(
       'SELECT COUNT(*) as count FROM recomendados WHERE identificacion = ?',
       [identificacion]
     );
-    
+
     if (existing[0].count > 0) {
       return res.status(400).json({ error: 'El recomendado ya existe' });
     }
-    
+
     // Insertar nuevo recomendado
-    await connection.execute(
+    await db.execute(
       'INSERT INTO recomendados (identificacion, nombre, apellido, celular, email) VALUES (?, ?, ?, ?, ?)',
       [identificacion, nombre.toUpperCase(), apellido.toUpperCase(), celular.toUpperCase(), email.toUpperCase()]
     );
@@ -116,7 +112,7 @@ app.post('/recomendados', async (req, res) => {
 
 // PUT /recomendados/:old_id - Actualizar recomendado
 app.put('/recomendados/:old_id', async (req, res) => {
-  const connection = await getDbConnection();
+  const connection = await db.getConnection();
   try {
     const oldId = req.params.old_id;
     const { 
@@ -167,43 +163,50 @@ app.put('/recomendados/:old_id', async (req, res) => {
 
 // DELETE /recomendados/:identificacion - Eliminar recomendado
 app.delete('/recomendados/:identificacion', async (req, res) => {
+  const connection = await db.getConnection();
   try {
     const { identificacion } = req.params;
-    
-    const connection = await getDbConnection();
-    
+
+    await connection.beginTransaction();
+
     // Verificar que existe
     const [existing] = await connection.execute(
       'SELECT COUNT(*) as count FROM recomendados WHERE identificacion = ?',
       [identificacion]
     );
-    
+
     if (existing[0].count === 0) {
+      await connection.rollback();
       return res.status(404).json({ error: 'El recomendado no existe' });
     }
-    
+
     // Verificar líderes asociados
     const [leaders] = await connection.execute(
       'SELECT * FROM lideres WHERE recomendado_identificacion = ?',
       [identificacion]
     );
-    
+
     if (leaders.length > 0) {
+      await connection.rollback();
       return res.status(400).json({
         error: 'No se puede eliminar, existen líderes asociados a este recomendado',
         leaders: leaders
       });
     }
-    
+
     // Eliminar recomendado
     await connection.execute(
       'DELETE FROM recomendados WHERE identificacion = ?',
       [identificacion]
     );
-    
+
+    await connection.commit();
     res.json({ message: 'Recomendado eliminado con éxito' });
   } catch (error) {
+    await connection.rollback();
     res.status(500).json({ error: error.message });
+  } finally {
+    connection.release();
   }
 });
 
@@ -216,8 +219,7 @@ app.get('/lideres/por-recomendado', async (req, res) => {
       return res.status(400).json({ error: 'Se requiere la cédula del recomendado' });
     }
     
-    const connection = await getDbConnection();
-    const [rows] = await connection.execute(
+    const [rows] = await db.execute(
       `SELECT identificacion AS lider_identificacion,
               nombre AS lider_nombre,
               apellido AS lider_apellido,
@@ -241,9 +243,8 @@ app.get('/lideres/por-recomendado', async (req, res) => {
 // GET /lideres - Obtener todos los líderes
 app.get('/lideres', async (req, res) => {
   try {
-    const connection = await getDbConnection();
-    const [rows] = await connection.execute(
-      `SELECT 
+    const [rows] = await db.execute(
+      `SELECT
         l.identificacion AS lider_identificacion,
         l.nombre AS lider_nombre,
         l.apellido AS lider_apellido,
@@ -265,8 +266,7 @@ app.get('/lideres', async (req, res) => {
 // GET /lideres/:cedula - Obtener líder por cédula
 app.get('/lideres/:cedula', async (req, res) => {
   try {
-    const connection = await getDbConnection();
-    const [rows] = await connection.execute(
+    const [rows] = await db.execute(
       'SELECT identificacion, nombre, apellido FROM lideres WHERE identificacion = ?',
       [req.params.cedula]
     );
@@ -294,21 +294,19 @@ app.post('/lideres', async (req, res) => {
       objetivo
     } = req.body;
     
-    const connection = await getDbConnection();
-    
     // Verificar si ya existe
-    const [existing] = await connection.execute(
+    const [existing] = await db.execute(
       'SELECT COUNT(*) as count FROM lideres WHERE identificacion = ?',
       [identificacion]
     );
-    
+
     if (existing[0].count > 0) {
       return res.status(400).json({ error: 'El líder ya existe' });
     }
-    
+
     // Insertar nuevo líder
-    await connection.execute(
-      `INSERT INTO lideres 
+    await db.execute(
+      `INSERT INTO lideres
        (identificacion, nombre, apellido, celular, email, recomendado_identificacion, objetivo)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
@@ -330,7 +328,7 @@ app.post('/lideres', async (req, res) => {
 
 // PUT /lideres/:old_id - Actualizar líder
 app.put('/lideres/:old_id', async (req, res) => {
-  const connection = await getDbConnection();
+  const connection = await db.getConnection();
   try {
     const oldId = req.params.old_id;
     const {
@@ -393,8 +391,7 @@ app.put('/lideres/:old_id', async (req, res) => {
 // DELETE /lideres/:cedula - Eliminar líder
 app.delete('/lideres/:cedula', async (req, res) => {
   try {
-    const connection = await getDbConnection();
-    const [result] = await connection.execute(
+    const [result] = await db.execute(
       'DELETE FROM lideres WHERE identificacion = ?',
       [req.params.cedula]
     );
@@ -412,8 +409,7 @@ app.delete('/lideres/:cedula', async (req, res) => {
 // GET /lideres/distribution - Distribución de líderes
 app.get('/lideres/distribution', async (req, res) => {
   try {
-    const connection = await getDbConnection();
-    const [rows] = await connection.execute(
+    const [rows] = await db.execute(
       'SELECT lider_identificacion, COUNT(*) AS total_votantes FROM votantes GROUP BY lider_identificacion'
     );
     res.json(rows);
@@ -444,7 +440,7 @@ app.put('/votantes/reasignar', async (req, res) => {
       return res.status(400).json({ error: 'Faltan parámetros requeridos' });
     }
     
-    const connection = await getDbConnection();
+    const connection = await db.getConnection();
     
     if (new_lider_identificacion === old_lider_identificacion) {
       // Mantener líder actual
@@ -502,53 +498,64 @@ app.post('/votantes', async (req, res) => {
       lider_identificacion
     } = req.body;
     
-    const connection = await getDbConnection();
-    
-    // Verificar si ya existe (con información del líder)
-    const [existing] = await connection.execute(
-      `SELECT v.*, l.nombre AS lider_nombre, l.apellido AS lider_apellido
-       FROM votantes v
-       LEFT JOIN lideres l ON v.lider_identificacion = l.identificacion
-       WHERE v.identificacion = ?`,
-      [identificacion]
-    );
-    
-    if (existing.length > 0) {
-      const existingVotante = existing[0];
-      
-      // Si no tiene nombre del líder pero sí tiene lider_identificacion
-      if (!existingVotante.lider_nombre && existingVotante.lider_identificacion) {
-        const [leaderInfo] = await connection.execute(
-          'SELECT nombre FROM lideres WHERE identificacion = ?',
-          [existingVotante.lider_identificacion]
-        );
-        if (leaderInfo.length > 0) {
-          existingVotante.lider_nombre = leaderInfo[0].nombre;
+    const connection = await db.getConnection();
+    try {
+      await connection.beginTransaction();
+
+      // Verificar si ya existe (con información del líder)
+      const [existing] = await connection.execute(
+        `SELECT v.*, l.nombre AS lider_nombre, l.apellido AS lider_apellido
+         FROM votantes v
+         LEFT JOIN lideres l ON v.lider_identificacion = l.identificacion
+         WHERE v.identificacion = ?`,
+        [identificacion]
+      );
+
+      if (existing.length > 0) {
+        const existingVotante = existing[0];
+
+        // Si no tiene nombre del líder pero sí tiene lider_identificacion
+        if (!existingVotante.lider_nombre && existingVotante.lider_identificacion) {
+          const [leaderInfo] = await connection.execute(
+            'SELECT nombre FROM lideres WHERE identificacion = ?',
+            [existingVotante.lider_identificacion]
+          );
+          if (leaderInfo.length > 0) {
+            existingVotante.lider_nombre = leaderInfo[0].nombre;
+          }
         }
+
+        await connection.rollback();
+        return res.status(400).json({
+          error: 'El votante ya existe',
+          duplicado: true,
+          votante: existingVotante
+        });
       }
-      
-      return res.status(400).json({
-        error: 'El votante ya existe',
-        duplicado: true,
-        votante: existingVotante
-      });
+
+      // Insertar nuevo votante
+      await connection.execute(
+        `INSERT INTO votantes
+         (identificacion, nombre, apellido, direccion, celular, email, lider_identificacion)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          identificacion,
+          nombre.toUpperCase(),
+          apellido.toUpperCase(),
+          direccion.toUpperCase(),
+          celular.toUpperCase(),
+          email.toUpperCase(),
+          lider_identificacion
+        ]
+      );
+
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
     }
-    
-    // Insertar nuevo votante
-    await connection.execute(
-      `INSERT INTO votantes 
-       (identificacion, nombre, apellido, direccion, celular, email, lider_identificacion)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [
-        identificacion,
-        nombre.toUpperCase(),
-        apellido.toUpperCase(),
-        direccion.toUpperCase(),
-        celular.toUpperCase(),
-        email.toUpperCase(),
-        lider_identificacion
-      ]
-    );
     
     res.status(201).json({ message: 'Votante creado con éxito' });
   } catch (error) {
@@ -569,20 +576,18 @@ app.put('/votantes', async (req, res) => {
       lider_identificacion
     } = req.body;
     
-    const connection = await getDbConnection();
-    
     // Verificar que existe
-    const [existing] = await connection.execute(
+    const [existing] = await db.execute(
       'SELECT COUNT(*) as count FROM votantes WHERE identificacion = ?',
       [identificacion]
     );
-    
+
     if (existing[0].count === 0) {
       return res.status(404).json({ error: 'El votante no existe' });
     }
-    
+
     // Actualizar votante
-    await connection.execute(
+    await db.execute(
       `UPDATE votantes
        SET nombre = ?, apellido = ?, direccion = ?, celular = ?, email = ?, lider_identificacion = ?
        WHERE identificacion = ?`,
@@ -606,8 +611,7 @@ app.put('/votantes', async (req, res) => {
 // DELETE /votantes/:identificacion - Eliminar votante
 app.delete('/votantes/:identificacion', async (req, res) => {
   try {
-    const connection = await getDbConnection();
-    const [result] = await connection.execute(
+    const [result] = await db.execute(
       'DELETE FROM votantes WHERE identificacion = ?',
       [req.params.identificacion]
     );
@@ -627,10 +631,8 @@ app.get('/votantes/por-lider', async (req, res) => {
   try {
     const { lider } = req.query;
     
-    const connection = await getDbConnection();
-    
     // Obtener votantes del líder
-    const [votantes] = await connection.execute(
+    const [votantes] = await db.execute(
       `SELECT identificacion, nombre, apellido, direccion, celular
        FROM votantes
        WHERE lider_identificacion = ?`,
@@ -668,10 +670,8 @@ app.get('/votantes/por-lider-detalle', async (req, res) => {
   try {
     const { lider } = req.query;
     
-    const connection = await getDbConnection();
-    
     // Obtener información del líder
-    const [liderInfo] = await connection.execute(
+    const [liderInfo] = await db.execute(
       'SELECT nombre, apellido, identificacion FROM lideres WHERE identificacion = ?',
       [lider]
     );
@@ -726,76 +726,86 @@ app.post('/votantes/upload_csv', upload.single('file'), async (req, res) => {
     
     let inserted = 0;
     const duplicados = [];
-    
-    const connection = await getDbConnection();
-    
-    for (const row of data) {
-      const cedula = String(row.Cedula || 0).trim();
-      const nombres = String(row.Nombres || '').toUpperCase().trim();
-      const apellidos = String(row.Apellidos || '').toUpperCase().trim();
-      const direccion = String(row.Direccion || '').toUpperCase().trim();
-      const celular = String(row.Celular || '0').toUpperCase().trim();
-      const lider = String(row.Lider || 0).trim();
-      
-      // Verificar si ya existe
-      const [existing] = await connection.execute(
-        'SELECT * FROM votantes WHERE identificacion = ?',
-        [cedula]
-      );
-      
-      if (existing.length > 0) {
-        const existingVotante = existing[0];
-        let leaderNombre = null;
-        
-        if (existingVotante.lider_identificacion) {
-          const [leaderInfo] = await connection.execute(
-            'SELECT nombre FROM lideres WHERE identificacion = ?',
-            [existingVotante.lider_identificacion]
-          );
-          leaderNombre = leaderInfo.length > 0 ? leaderInfo[0].nombre : null;
-        }
-        
-        duplicados.push({
-          identificacion: cedula,
-          nombre: existingVotante.nombre,
-          apellido: existingVotante.apellido,
-          direccion: existingVotante.direccion,
-          celular: existingVotante.celular,
-          lider_identificacion: existingVotante.lider_identificacion,
-          lider_nombre: leaderNombre,
-          nombre_intentado: nombres,
-          apellido_intentado: apellidos,
-          direccion_intentado: direccion,
-          celular_intentado: celular,
-          lider_intentado: lider
-        });
-      } else {
-        // Verificar que el líder existe
-        const [leaderExists] = await connection.execute(
-          'SELECT COUNT(*) as count FROM lideres WHERE identificacion = ?',
-          [lider]
+
+    const connection = await db.getConnection();
+    try {
+      await connection.beginTransaction();
+
+      for (const row of data) {
+        const cedula = String(row.Cedula || 0).trim();
+        const nombres = String(row.Nombres || '').toUpperCase().trim();
+        const apellidos = String(row.Apellidos || '').toUpperCase().trim();
+        const direccion = String(row.Direccion || '').toUpperCase().trim();
+        const celular = String(row.Celular || '0').toUpperCase().trim();
+        const lider = String(row.Lider || 0).trim();
+
+        // Verificar si ya existe
+        const [existing] = await connection.execute(
+          'SELECT * FROM votantes WHERE identificacion = ?',
+          [cedula]
         );
-        
-        if (leaderExists[0].count === 0) {
+
+        if (existing.length > 0) {
+          const existingVotante = existing[0];
+          let leaderNombre = null;
+
+          if (existingVotante.lider_identificacion) {
+            const [leaderInfo] = await connection.execute(
+              'SELECT nombre FROM lideres WHERE identificacion = ?',
+              [existingVotante.lider_identificacion]
+            );
+            leaderNombre = leaderInfo.length > 0 ? leaderInfo[0].nombre : null;
+          }
+
           duplicados.push({
             identificacion: cedula,
-            nombre: nombres,
-            apellido: apellidos,
-            direccion: direccion,
-            celular: celular,
-            error: `Líder con identificación ${lider} no existe`
+            nombre: existingVotante.nombre,
+            apellido: existingVotante.apellido,
+            direccion: existingVotante.direccion,
+            celular: existingVotante.celular,
+            lider_identificacion: existingVotante.lider_identificacion,
+            lider_nombre: leaderNombre,
+            nombre_intentado: nombres,
+            apellido_intentado: apellidos,
+            direccion_intentado: direccion,
+            celular_intentado: celular,
+            lider_intentado: lider
           });
         } else {
-          // Insertar nuevo votante
-          await connection.execute(
-            `INSERT INTO votantes 
-             (identificacion, nombre, apellido, direccion, celular, email, lider_identificacion)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [cedula, nombres, apellidos, direccion, celular, null, lider]
+          // Verificar que el líder existe
+          const [leaderExists] = await connection.execute(
+            'SELECT COUNT(*) as count FROM lideres WHERE identificacion = ?',
+            [lider]
           );
-          inserted++;
+
+          if (leaderExists[0].count === 0) {
+            duplicados.push({
+              identificacion: cedula,
+              nombre: nombres,
+              apellido: apellidos,
+              direccion: direccion,
+              celular: celular,
+              error: `Líder con identificación ${lider} no existe`
+            });
+          } else {
+            // Insertar nuevo votante
+            await connection.execute(
+              `INSERT INTO votantes
+               (identificacion, nombre, apellido, direccion, celular, email, lider_identificacion)
+               VALUES (?, ?, ?, ?, ?, ?, ?)`,
+              [cedula, nombres, apellidos, direccion, celular, null, lider]
+            );
+            inserted++;
+          }
         }
       }
+
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
     }
     
     // Eliminar archivo temporal
@@ -818,8 +828,7 @@ app.post('/votantes/upload_csv', upload.single('file'), async (req, res) => {
 // GET /votantes/total - Total de votantes
 app.get('/votantes/total', async (req, res) => {
   try {
-    const connection = await getDbConnection();
-    const [rows] = await connection.execute('SELECT COUNT(*) as total FROM votantes');
+    const [rows] = await db.execute('SELECT COUNT(*) as total FROM votantes');
     
     res.json({
       total: rows[0].total,
@@ -833,8 +842,7 @@ app.get('/votantes/total', async (req, res) => {
 // GET /lideres/total - Total de líderes
 app.get('/lideres/total', async (req, res) => {
   try {
-    const connection = await getDbConnection();
-    const [rows] = await connection.execute('SELECT COUNT(*) as total FROM lideres');
+    const [rows] = await db.execute('SELECT COUNT(*) as total FROM lideres');
     
     res.json({
       total: rows[0].total,
@@ -848,8 +856,7 @@ app.get('/lideres/total', async (req, res) => {
 // GET /recomendados/total - Total de recomendados
 app.get('/recomendados/total', async (req, res) => {
   try {
-    const connection = await getDbConnection();
-    const [rows] = await connection.execute('SELECT COUNT(*) as total FROM recomendados');
+    const [rows] = await db.execute('SELECT COUNT(*) as total FROM recomendados');
     
     res.json({
       total: rows[0].total,
@@ -863,14 +870,12 @@ app.get('/recomendados/total', async (req, res) => {
 // GET /votantes/promedio_lider - Promedio de votantes por líder
 app.get('/votantes/promedio_lider', async (req, res) => {
   try {
-    const connection = await getDbConnection();
-    
     // Contar votantes totales
-    const [votantesResult] = await connection.execute('SELECT COUNT(*) as total_votantes FROM votantes');
+    const [votantesResult] = await db.execute('SELECT COUNT(*) as total_votantes FROM votantes');
     const totalVotantes = votantesResult[0].total_votantes;
-    
+
     // Contar líderes totales
-    const [lideresResult] = await connection.execute('SELECT COUNT(*) as total_lideres FROM lideres');
+    const [lideresResult] = await db.execute('SELECT COUNT(*) as total_lideres FROM lideres');
     const totalLideres = lideresResult[0].total_lideres;
     
     const promedio = totalLideres === 0 ? 0 : Math.round((totalVotantes / totalLideres) * 100) / 100;
@@ -887,11 +892,9 @@ app.get('/votantes/promedio_lider', async (req, res) => {
 // GET /votantes/tendencia_mensual - Tendencia mensual de votantes
 app.get('/votantes/tendencia_mensual', async (req, res) => {
   try {
-    const connection = await getDbConnection();
-    
     // Nota: Asumiendo que existe una columna 'created_at' en la tabla votantes
     // Si no existe, necesitarás ajustar esta consulta o crear la columna
-    const [rows] = await connection.execute(`
+    const [rows] = await db.execute(`
       SELECT DATE(created_at) AS fecha, COUNT(*) AS conteo
       FROM votantes
       WHERE created_at >= CURDATE() - INTERVAL 30 DAY
