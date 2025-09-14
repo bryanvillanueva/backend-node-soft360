@@ -31,7 +31,7 @@ const storage = multer.diskStorage({
 const upload = multer({ storage: storage });
 
 // Configuración de la base de datos principal usando variables de entorno
-const db = mysql.createPool({
+const dbConfig = {
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
@@ -42,7 +42,9 @@ const db = mysql.createPool({
     charset: 'utf8mb4',
     enableKeepAlive: true,
     keepAliveInitialDelay: 10000,
-});
+};
+
+const db = mysql.createPool(dbConfig);
 
 // Función para obtener conexión a la base de datos (usando pool)
 async function getDbConnection() {
@@ -988,7 +990,7 @@ app.listen(port, () => {
   console.log(`🚀 Servidor corriendo en http://localhost:${port}`);
   console.log(`📊 Health check disponible en http://localhost:${port}/health`);
   console.log(`🔧 Ambiente: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`💾 Pool de conexiones configurado con ${db.config.connectionLimit} conexiones máximas`);
+  console.log(`💾 Pool de conexiones configurado con ${dbConfig.connectionLimit} conexiones máximas`);
 });
 
 module.exports = app;
