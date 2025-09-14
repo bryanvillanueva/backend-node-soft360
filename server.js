@@ -15,9 +15,9 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Configuración de multer para uploads
+const uploadDir = process.env.UPLOAD_DIR || 'data';
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const uploadDir = 'data';
     if (!fs.existsSync(uploadDir)) {
       fs.mkdirSync(uploadDir, { recursive: true });
     }
@@ -30,22 +30,27 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage: storage });
 
-// Configuración de la base de datos
-const dbConfig = {
-  host: 'srv1041.hstgr.io',
-  user: 'u255066530_admin_vote',
-  password: 'mm0ShzyT[1uEvtBZY2Bl^',
-  database: 'u255066530_quilla_vote'
-};
+// Configuración de la base de datos principal usando variables de entorno
+const db = mysql.createPool({
+    host: process.env.DB_HOST,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+    charset: 'utf8mb4',
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 10000,
+});
 
-// Función para obtener conexión a la base de datos
+// Función para obtener conexión a la base de datos (usando pool)
 async function getDbConnection() {
   try {
-    const connection = await mysql.createConnection(dbConfig);
-    console.log('Conexión a la base de datos establecida');
-    return connection;
+    console.log('Usando pool de conexiones a la base de datos');
+    return db;
   } catch (error) {
-    console.error('Error al conectar con la base de datos:', error.message);
+    console.error('Error al obtener conexión del pool:', error.message);
     throw error;
   }
 }
@@ -78,25 +83,21 @@ app.post('/upload_pdf', upload.single('file'), async (req, res) => {
 
 // GET /recomendados - Obtener todos los recomendados
 app.get('/recomendados', async (req, res) => {
-  let connection;
   try {
-    connection = await getDbConnection();
+    const connection = await getDbConnection();
     const [rows] = await connection.execute(
       'SELECT identificacion, nombre, apellido, celular, email FROM recomendados'
     );
     res.json(rows);
   } catch (error) {
     res.status(500).json({ error: error.message });
-  } finally {
-    if (connection) await connection.end();
   }
 });
 
 // GET /recomendados/:cedula - Obtener recomendado por cédula
 app.get('/recomendados/:cedula', async (req, res) => {
-  let connection;
   try {
-    connection = await getDbConnection();
+    const connection = await getDbConnection();
     const [rows] = await connection.execute(
       'SELECT identificacion, nombre, apellido FROM recomendados WHERE identificacion = ?',
       [req.params.cedula]
@@ -109,18 +110,15 @@ app.get('/recomendados/:cedula', async (req, res) => {
     res.json(rows[0]);
   } catch (error) {
     res.status(500).json({ error: error.message });
-  } finally {
-    if (connection) await connection.end();
   }
 });
 
 // POST /recomendados - Crear nuevo recomendado
 app.post('/recomendados', async (req, res) => {
-  let connection;
   try {
     const { identificacion, nombre = '', apellido = '', celular = '', email = '' } = req.body;
     
-    connection = await getDbConnection();
+    const connection = await getDbConnection();
     
     // Verificar si ya existe
     const [existing] = await connection.execute(
@@ -141,14 +139,12 @@ app.post('/recomendados', async (req, res) => {
     res.status(201).json({ message: 'Recomendado creado con éxito' });
   } catch (error) {
     res.status(500).json({ error: error.message });
-  } finally {
-    if (connection) await connection.end();
   }
 });
 
 // PUT /recomendados/:old_id - Actualizar recomendado
 app.put('/recomendados/:old_id', async (req, res) => {
-  let connection;
+  const connection = await getDbConnection();
   try {
     const oldId = req.params.old_id;
     const { 
@@ -160,7 +156,6 @@ app.put('/recomendados/:old_id', async (req, res) => {
       email = ''
     } = req.body;
     
-    connection = await getDbConnection();
     await connection.beginTransaction();
     
     // Verificar que existe
@@ -193,20 +188,17 @@ app.put('/recomendados/:old_id', async (req, res) => {
     await connection.commit();
     res.json({ message: 'Recomendado y líderes asociados actualizados con éxito' });
   } catch (error) {
-    if (connection) await connection.rollback();
+    await connection.rollback();
     res.status(500).json({ error: error.message });
-  } finally {
-    if (connection) await connection.end();
   }
 });
 
 // DELETE /recomendados/:identificacion - Eliminar recomendado
 app.delete('/recomendados/:identificacion', async (req, res) => {
-  let connection;
   try {
     const { identificacion } = req.params;
     
-    connection = await getDbConnection();
+    const connection = await getDbConnection();
     
     // Verificar que existe
     const [existing] = await connection.execute(
@@ -240,14 +232,11 @@ app.delete('/recomendados/:identificacion', async (req, res) => {
     res.json({ message: 'Recomendado eliminado con éxito' });
   } catch (error) {
     res.status(500).json({ error: error.message });
-  } finally {
-    if (connection) await connection.end();
   }
 });
 
 // GET /lideres/por-recomendado - Obtener líderes por recomendado
 app.get('/lideres/por-recomendado', async (req, res) => {
-  let connection;
   try {
     const { recomendado } = req.query;
     
@@ -255,7 +244,7 @@ app.get('/lideres/por-recomendado', async (req, res) => {
       return res.status(400).json({ error: 'Se requiere la cédula del recomendado' });
     }
     
-    connection = await getDbConnection();
+    const connection = await getDbConnection();
     const [rows] = await connection.execute(
       `SELECT identificacion AS lider_identificacion,
               nombre AS lider_nombre,
@@ -270,8 +259,6 @@ app.get('/lideres/por-recomendado', async (req, res) => {
     res.json(rows);
   } catch (error) {
     res.status(500).json({ error: error.message });
-  } finally {
-    if (connection) await connection.end();
   }
 });
 
@@ -281,9 +268,8 @@ app.get('/lideres/por-recomendado', async (req, res) => {
 
 // GET /lideres - Obtener todos los líderes
 app.get('/lideres', async (req, res) => {
-  let connection;
   try {
-    connection = await getDbConnection();
+    const connection = await getDbConnection();
     const [rows] = await connection.execute(
       `SELECT 
         l.identificacion AS lider_identificacion,
@@ -301,16 +287,13 @@ app.get('/lideres', async (req, res) => {
     res.json(rows);
   } catch (error) {
     res.status(500).json({ error: error.message });
-  } finally {
-    if (connection) await connection.end();
   }
 });
 
 // GET /lideres/:cedula - Obtener líder por cédula
 app.get('/lideres/:cedula', async (req, res) => {
-  let connection;
   try {
-    connection = await getDbConnection();
+    const connection = await getDbConnection();
     const [rows] = await connection.execute(
       'SELECT identificacion, nombre, apellido FROM lideres WHERE identificacion = ?',
       [req.params.cedula]
@@ -323,14 +306,11 @@ app.get('/lideres/:cedula', async (req, res) => {
     res.json(rows[0]);
   } catch (error) {
     res.status(500).json({ error: error.message });
-  } finally {
-    if (connection) await connection.end();
   }
 });
 
 // POST /lideres - Crear nuevo líder
 app.post('/lideres', async (req, res) => {
-  let connection;
   try {
     const { 
       identificacion,
@@ -342,7 +322,7 @@ app.post('/lideres', async (req, res) => {
       objetivo
     } = req.body;
     
-    connection = await getDbConnection();
+    const connection = await getDbConnection();
     
     // Verificar si ya existe
     const [existing] = await connection.execute(
@@ -373,14 +353,12 @@ app.post('/lideres', async (req, res) => {
     res.status(201).json({ message: 'Líder creado con éxito' });
   } catch (error) {
     res.status(500).json({ error: error.message });
-  } finally {
-    if (connection) await connection.end();
   }
 });
 
 // PUT /lideres/:old_id - Actualizar líder
 app.put('/lideres/:old_id', async (req, res) => {
-  let connection;
+  const connection = await getDbConnection();
   try {
     const oldId = req.params.old_id;
     const {
@@ -393,7 +371,6 @@ app.put('/lideres/:old_id', async (req, res) => {
       objetivo
     } = req.body;
     
-    connection = await getDbConnection();
     await connection.beginTransaction();
     
     // Verificar que existe
@@ -436,18 +413,15 @@ app.put('/lideres/:old_id', async (req, res) => {
     await connection.commit();
     res.json({ message: 'Líder y votantes asociados actualizados con éxito' });
   } catch (error) {
-    if (connection) await connection.rollback();
+    await connection.rollback();
     res.status(500).json({ error: error.message });
-  } finally {
-    if (connection) await connection.end();
   }
 });
 
 // DELETE /lideres/:cedula - Eliminar líder
 app.delete('/lideres/:cedula', async (req, res) => {
-  let connection;
   try {
-    connection = await getDbConnection();
+    const connection = await getDbConnection();
     const [result] = await connection.execute(
       'DELETE FROM lideres WHERE identificacion = ?',
       [req.params.cedula]
@@ -460,24 +434,19 @@ app.delete('/lideres/:cedula', async (req, res) => {
     res.json({ message: 'Líder eliminado con éxito' });
   } catch (error) {
     res.status(500).json({ error: error.message });
-  } finally {
-    if (connection) await connection.end();
   }
 });
 
 // GET /lideres/distribution - Distribución de líderes
 app.get('/lideres/distribution', async (req, res) => {
-  let connection;
   try {
-    connection = await getDbConnection();
+    const connection = await getDbConnection();
     const [rows] = await connection.execute(
       'SELECT lider_identificacion, COUNT(*) AS total_votantes FROM votantes GROUP BY lider_identificacion'
     );
     res.json(rows);
   } catch (error) {
     res.status(500).json({ error: error.message });
-  } finally {
-    if (connection) await connection.end();
   }
 });
 
@@ -487,7 +456,6 @@ app.get('/lideres/distribution', async (req, res) => {
 
 // PUT /votantes/reasignar - Reasignar votante
 app.put('/votantes/reasignar', async (req, res) => {
-  let connection;
   try {
     const {
       votante_identificacion,
@@ -504,7 +472,7 @@ app.put('/votantes/reasignar', async (req, res) => {
       return res.status(400).json({ error: 'Faltan parámetros requeridos' });
     }
     
-    connection = await getDbConnection();
+    const connection = await getDbConnection();
     
     if (new_lider_identificacion === old_lider_identificacion) {
       // Mantener líder actual
@@ -546,14 +514,11 @@ app.put('/votantes/reasignar', async (req, res) => {
     res.json({ message: 'Operación de reasignación completada con éxito' });
   } catch (error) {
     res.status(500).json({ error: error.message });
-  } finally {
-    if (connection) await connection.end();
   }
 });
 
 // POST /votantes - Crear nuevo votante
 app.post('/votantes', async (req, res) => {
-  let connection;
   try {
     const {
       identificacion,
@@ -565,7 +530,7 @@ app.post('/votantes', async (req, res) => {
       lider_identificacion
     } = req.body;
     
-    connection = await getDbConnection();
+    const connection = await getDbConnection();
     
     // Verificar si ya existe (con información del líder)
     const [existing] = await connection.execute(
@@ -616,14 +581,11 @@ app.post('/votantes', async (req, res) => {
     res.status(201).json({ message: 'Votante creado con éxito' });
   } catch (error) {
     res.status(500).json({ error: error.message });
-  } finally {
-    if (connection) await connection.end();
   }
 });
 
 // PUT /votantes - Actualizar votante
 app.put('/votantes', async (req, res) => {
-  let connection;
   try {
     const {
       identificacion,
@@ -635,7 +597,7 @@ app.put('/votantes', async (req, res) => {
       lider_identificacion
     } = req.body;
     
-    connection = await getDbConnection();
+    const connection = await getDbConnection();
     
     // Verificar que existe
     const [existing] = await connection.execute(
@@ -666,16 +628,13 @@ app.put('/votantes', async (req, res) => {
     res.json({ message: 'Votante actualizado con éxito' });
   } catch (error) {
     res.status(500).json({ error: error.message });
-  } finally {
-    if (connection) await connection.end();
   }
 });
 
 // DELETE /votantes/:identificacion - Eliminar votante
 app.delete('/votantes/:identificacion', async (req, res) => {
-  let connection;
   try {
-    connection = await getDbConnection();
+    const connection = await getDbConnection();
     const [result] = await connection.execute(
       'DELETE FROM votantes WHERE identificacion = ?',
       [req.params.identificacion]
@@ -688,18 +647,15 @@ app.delete('/votantes/:identificacion', async (req, res) => {
     res.json({ message: 'Votante eliminado con éxito' });
   } catch (error) {
     res.status(500).json({ error: error.message });
-  } finally {
-    if (connection) await connection.end();
   }
 });
 
 // GET /votantes/por-lider - Obtener votantes por líder
 app.get('/votantes/por-lider', async (req, res) => {
-  let connection;
   try {
     const { lider } = req.query;
     
-    connection = await getDbConnection();
+    const connection = await getDbConnection();
     
     // Obtener votantes del líder
     const [votantes] = await connection.execute(
@@ -732,18 +688,15 @@ app.get('/votantes/por-lider', async (req, res) => {
     res.json({ lider: liderInfo[0], votantes });
   } catch (error) {
     res.status(500).json({ error: error.message });
-  } finally {
-    if (connection) await connection.end();
   }
 });
 
 // GET /votantes/por-lider-detalle - Obtener votantes por líder con detalles
 app.get('/votantes/por-lider-detalle', async (req, res) => {
-  let connection;
   try {
     const { lider } = req.query;
     
-    connection = await getDbConnection();
+    const connection = await getDbConnection();
     
     // Obtener información del líder
     const [liderInfo] = await connection.execute(
@@ -771,14 +724,11 @@ app.get('/votantes/por-lider-detalle', async (req, res) => {
     res.json({ lider: liderInfo[0], votantes });
   } catch (error) {
     res.status(500).json({ error: error.message });
-  } finally {
-    if (connection) await connection.end();
   }
 });
 
 // POST /votantes/upload_csv - Cargar votantes desde Excel
 app.post('/votantes/upload_csv', upload.single('file'), async (req, res) => {
-  let connection;
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No se envió ningún archivo' });
@@ -805,7 +755,7 @@ app.post('/votantes/upload_csv', upload.single('file'), async (req, res) => {
     let inserted = 0;
     const duplicados = [];
     
-    connection = await getDbConnection();
+    const connection = await getDbConnection();
     
     for (const row of data) {
       const cedula = String(row.Cedula || 0).trim();
@@ -886,8 +836,6 @@ app.post('/votantes/upload_csv', upload.single('file'), async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ error: `Error al procesar el archivo: ${error.message}` });
-  } finally {
-    if (connection) await connection.end();
   }
 });
 
@@ -897,9 +845,8 @@ app.post('/votantes/upload_csv', upload.single('file'), async (req, res) => {
 
 // GET /votantes/total - Total de votantes
 app.get('/votantes/total', async (req, res) => {
-  let connection;
   try {
-    connection = await getDbConnection();
+    const connection = await getDbConnection();
     const [rows] = await connection.execute('SELECT COUNT(*) as total FROM votantes');
     
     res.json({
@@ -908,16 +855,13 @@ app.get('/votantes/total', async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
-  } finally {
-    if (connection) await connection.end();
   }
 });
 
 // GET /lideres/total - Total de líderes
 app.get('/lideres/total', async (req, res) => {
-  let connection;
   try {
-    connection = await getDbConnection();
+    const connection = await getDbConnection();
     const [rows] = await connection.execute('SELECT COUNT(*) as total FROM lideres');
     
     res.json({
@@ -926,16 +870,13 @@ app.get('/lideres/total', async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
-  } finally {
-    if (connection) await connection.end();
   }
 });
 
 // GET /recomendados/total - Total de recomendados
 app.get('/recomendados/total', async (req, res) => {
-  let connection;
   try {
-    connection = await getDbConnection();
+    const connection = await getDbConnection();
     const [rows] = await connection.execute('SELECT COUNT(*) as total FROM recomendados');
     
     res.json({
@@ -944,16 +885,13 @@ app.get('/recomendados/total', async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
-  } finally {
-    if (connection) await connection.end();
   }
 });
 
 // GET /votantes/promedio_lider - Promedio de votantes por líder
 app.get('/votantes/promedio_lider', async (req, res) => {
-  let connection;
   try {
-    connection = await getDbConnection();
+    const connection = await getDbConnection();
     
     // Contar votantes totales
     const [votantesResult] = await connection.execute('SELECT COUNT(*) as total_votantes FROM votantes');
@@ -971,16 +909,13 @@ app.get('/votantes/promedio_lider', async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
-  } finally {
-    if (connection) await connection.end();
   }
 });
 
 // GET /votantes/tendencia_mensual - Tendencia mensual de votantes
 app.get('/votantes/tendencia_mensual', async (req, res) => {
-  let connection;
   try {
-    connection = await getDbConnection();
+    const connection = await getDbConnection();
     
     // Nota: Asumiendo que existe una columna 'created_at' en la tabla votantes
     // Si no existe, necesitarás ajustar esta consulta o crear la columna
@@ -1005,8 +940,6 @@ app.get('/votantes/tendencia_mensual', async (req, res) => {
     } else {
       res.status(500).json({ error: error.message });
     }
-  } finally {
-    if (connection) await connection.end();
   }
 });
 
@@ -1015,7 +948,8 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'OK', 
     message: 'Backend Node.js funcionando correctamente',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development'
   });
 });
 
@@ -1024,7 +958,7 @@ app.use((error, req, res, next) => {
   console.error('Error no manejado:', error);
   res.status(500).json({ 
     error: 'Error interno del servidor',
-    message: error.message 
+    message: process.env.NODE_ENV === 'development' ? error.message : 'Error interno'
   });
 });
 
@@ -1036,10 +970,25 @@ app.use('*', (req, res) => {
   });
 });
 
+// Manejar el cierre graceful del pool de conexiones
+process.on('SIGTERM', async () => {
+  console.log('Cerrando pool de conexiones...');
+  await db.end();
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  console.log('Cerrando pool de conexiones...');
+  await db.end();
+  process.exit(0);
+});
+
 // Iniciar servidor
 app.listen(port, () => {
   console.log(`🚀 Servidor corriendo en http://localhost:${port}`);
   console.log(`📊 Health check disponible en http://localhost:${port}/health`);
+  console.log(`🔧 Ambiente: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`💾 Pool de conexiones configurado con ${db.config.connectionLimit} conexiones máximas`);
 });
 
 module.exports = app;
