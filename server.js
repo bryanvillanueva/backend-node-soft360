@@ -50,6 +50,64 @@ const db = mysql.createPool(dbConfig);
 //        GRUPOS
 // ==============================
 
+
+// Crear un nuevo grupo
+app.post('/grupos', async (req, res) => {
+  const { nombre, descripcion = null } = req.body;
+  try {
+    const [result] = await db.execute(
+      'INSERT INTO grupos (nombre, descripcion) VALUES (?, ?)',
+      [nombre, descripcion]
+    );
+    res.json({ id: result.insertId, nombre, descripcion });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// listar los grupos
+app.get('/grupos', async (req, res) => {
+  try {
+    const [rows] = await db.execute(
+      `SELECT id, nombre, descripcion, created_at, updated_at
+       FROM grupos
+       ORDER BY id DESC`
+    );
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ver detalles de un grupo específico
+app.get('/grupos/:id', async (req, res) => {
+  try {
+    const [rows] = await db.execute(
+      `SELECT id, nombre, descripcion, created_at, updated_at
+       FROM grupos
+       WHERE id = ?`,
+      [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Grupo no encontrado' });
+    res.json(rows[0]);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
+// eliminar un grupo sin eliminar sus recomendados
+app.delete('/grupos/:id', async (req, res) => {
+  try {
+    const [result] = await db.execute('DELETE FROM grupos WHERE id = ?', [req.params.id]);
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'Grupo no encontrado' });
+    res.json({ message: 'Grupo eliminado con éxito' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
 // Obtener todos los grupos
 app.get('/grupos/total', async (req, res) => {
   const [rows] = await db.execute('SELECT COUNT(*) AS total FROM grupos');
