@@ -392,6 +392,37 @@ app.delete('/recomendados/:identificacion', async (req, res) => {
   }
 });
 
+// DELETE /recomendados/bulk - Borrado masivo de recomendados
+app.delete('/recomendados/bulk', async (req, res) => {
+  const { ids } = req.body || {};
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'Se requiere un array "ids" con al menos un ID' });
+  }
+  const connection = await db.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    // Desasociar en líderes
+    await connection.query(
+      'UPDATE lideres SET recomendado_identificacion = NULL WHERE recomendado_identificacion IN (?)',
+      [ids]
+    );
+
+    // Eliminar recomendados
+    const [result] = await connection.query(
+      'DELETE FROM recomendados WHERE identificacion IN (?)',
+      [ids]
+    );
+
+    await connection.commit();
+    res.json({ deleted: result.affectedRows });
+  } catch (error) {
+    await connection.rollback();
+    res.status(500).json({ error: error.message });
+  } finally {
+    connection.release();
+  }
+});
 
 
 // ==============================
@@ -705,6 +736,38 @@ app.put('/votantes/reasignar', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// GET /votantes - Obtener todos los votantes (con info básica del líder)
+app.get('/votantes', async (req, res) => {
+  try {
+    const { lider_id } = req.query; // filtro opcional
+
+    let sql = `
+      SELECT v.identificacion, v.nombre, v.apellido,
+             v.departamento, v.ciudad, v.barrio, v.direccion,
+             v.zona, v.puesto, v.mesa, v.direccion_puesto,
+             v.celular, v.email,
+             v.lider_identificacion,
+             l.nombre AS lider_nombre, l.apellido AS lider_apellido
+      FROM votantes v
+      LEFT JOIN lideres l ON l.identificacion = v.lider_identificacion
+    `;
+    const params = [];
+
+    if (lider_id) {
+      sql += " WHERE v.lider_identificacion = ?";
+      params.push(lider_id);
+    }
+
+    sql += " ORDER BY v.identificacion";
+
+    const [rows] = await db.execute(sql, params);
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 
 // GET /votantes/por-lider - Obtener votantes por líder (con info básica del líder)
 app.get('/votantes/por-lider', async (req, res) => {
