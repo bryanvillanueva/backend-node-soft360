@@ -243,6 +243,19 @@ app.get('/recomendados/:cedula', async (req, res) => {
   }
 });
 
+// obtener recomendados por búsqueda (cualquier campo)
+app.get('/recomendados/buscar', async (req, res) => {
+  const query = `%${req.query.query}%`;
+  const [rows] = await db.execute(
+    `SELECT identificacion, nombre, apellido, celular, email, grupo_id
+     FROM recomendados
+     WHERE identificacion LIKE ? OR nombre LIKE ? OR apellido LIKE ? OR celular LIKE ? OR email LIKE ?`,
+    [query, query, query, query, query]
+  );
+  res.json(rows);
+});
+
+
 // POST /recomendados - Crear nuevo recomendado
 app.post('/recomendados', async (req, res) => {
   try {
@@ -379,57 +392,7 @@ app.delete('/recomendados/:identificacion', async (req, res) => {
   }
 });
 
-// GET /lideres/por-recomendado - Obtener líderes por recomendado
-app.get('/lideres/por-recomendado', async (req, res) => {
-  try {
-    const { recomendado } = req.query;
-    
-    if (!recomendado) {
-      return res.status(400).json({ error: 'Se requiere la cédula del recomendado' });
-    }
-    
-    const [rows] = await db.execute(
-      `SELECT identificacion AS lider_identificacion,
-              nombre AS lider_nombre,
-              apellido AS lider_apellido,
-              celular AS lider_celular,
-              email AS lider_email
-       FROM lideres
-       WHERE recomendado_identificacion = ?`,
-      [recomendado]
-    );
-    
-    res.json(rows);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
 
-// GET /lideres/distribution - Distribución de líderes
-app.get('/lideres/distribution', async (req, res) => {
-  try {
-    const [rows] = await db.execute(
-      'SELECT lider_identificacion, COUNT(*) AS total_votantes FROM votantes GROUP BY lider_identificacion'
-    );
-    res.json(rows);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// GET /lideres/total - Total de líderes
-app.get('/lideres/total', async (req, res) => {
-  try {
-    const [rows] = await db.execute('SELECT COUNT(*) as total FROM lideres');
-
-    res.json({
-      total: rows[0].total,
-      trend: 'equal' // Placeholder para lógica de tendencia
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
 
 // ==============================
 //          LÍDERES
@@ -610,6 +573,82 @@ app.delete('/lideres/:cedula', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// GET /lideres/por-recomendado - Obtener líderes por recomendado
+app.get('/lideres/por-recomendado', async (req, res) => {
+  try {
+    const { recomendado } = req.query;
+    
+    if (!recomendado) {
+      return res.status(400).json({ error: 'Se requiere la cédula del recomendado' });
+    }
+    
+    const [rows] = await db.execute(
+      `SELECT identificacion AS lider_identificacion,
+              nombre AS lider_nombre,
+              apellido AS lider_apellido,
+              celular AS lider_celular,
+              email AS lider_email
+       FROM lideres
+       WHERE recomendado_identificacion = ?`,
+      [recomendado]
+    );
+    
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /lideres/buscar?query=texto - Buscar líderes por cualquier campo
+app.get('/lideres/buscar', async (req, res) => {
+  const query = `%${req.query.query}%`;
+  try {
+    const [rows] = await db.execute(
+      `SELECT l.identificacion, l.nombre, l.apellido, l.celular, l.email,
+              l.recomendado_identificacion, r.nombre AS recomendado_nombre
+       FROM lideres l
+       LEFT JOIN recomendados r ON r.identificacion = l.recomendado_identificacion
+       WHERE l.identificacion LIKE ?
+          OR l.nombre LIKE ?
+          OR l.apellido LIKE ?
+          OR l.celular LIKE ?
+          OR l.email LIKE ?`,
+      [query, query, query, query, query]
+    );
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
+// GET /lideres/distribution - Distribución de líderes
+app.get('/lideres/distribution', async (req, res) => {
+  try {
+    const [rows] = await db.execute(
+      'SELECT lider_identificacion, COUNT(*) AS total_votantes FROM votantes GROUP BY lider_identificacion'
+    );
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /lideres/total - Total de líderes
+app.get('/lideres/total', async (req, res) => {
+  try {
+    const [rows] = await db.execute('SELECT COUNT(*) as total FROM lideres');
+
+    res.json({
+      total: rows[0].total,
+      trend: 'equal' // Placeholder para lógica de tendencia
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 
 // ==============================
 //          VOTANTES
@@ -1089,6 +1128,30 @@ app.delete('/votantes/:identificacion', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// GET /votantes/buscar?query=texto - Buscar votantes por cualquier campo
+app.get('/votantes/buscar', async (req, res) => {
+  const query = `%${req.query.query}%`;
+  try {
+    const [rows] = await db.execute(
+      `SELECT v.identificacion, v.nombre, v.apellido, v.direccion, v.celular, v.email,
+              v.lider_identificacion, l.nombre AS lider_nombre, l.apellido AS lider_apellido
+       FROM votantes v
+       LEFT JOIN lideres l ON l.identificacion = v.lider_identificacion
+       WHERE v.identificacion LIKE ?
+          OR v.nombre LIKE ?
+          OR v.apellido LIKE ?
+          OR v.celular LIKE ?
+          OR v.email LIKE ?
+          OR v.direccion LIKE ?`,
+      [query, query, query, query, query, query]
+    );
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 
 // ==============================
 //    DASHBOARD Y REPORTES
