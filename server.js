@@ -79,7 +79,13 @@ app.get('/grupos', async (req, res) => {
   }
 });
 
-// ver detalles de un grupo específico
+// Obtener total de grupos - MOVER AQUÍ
+app.get('/grupos/total', async (req, res) => {
+  const [rows] = await db.execute('SELECT COUNT(*) AS total FROM grupos');
+  res.json(rows[0]);
+});
+
+// ver detalles de un grupo específico - DESPUÉS de las rutas específicas
 app.get('/grupos/:id', async (req, res) => {
   try {
     const [rows] = await db.execute(
@@ -95,7 +101,6 @@ app.get('/grupos/:id', async (req, res) => {
   }
 });
 
-
 // eliminar un grupo sin eliminar sus recomendados
 app.delete('/grupos/:id', async (req, res) => {
   try {
@@ -105,13 +110,6 @@ app.delete('/grupos/:id', async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
-});
-
-
-// Obtener todos los grupos
-app.get('/grupos/total', async (req, res) => {
-  const [rows] = await db.execute('SELECT COUNT(*) AS total FROM grupos');
-  res.json(rows[0]);
 });
 
 // Actualizar nombre o descripción de un grupo
@@ -225,6 +223,19 @@ app.get('/recomendados/total', async (req, res) => {
   }
 });
 
+// obtener recomendados por búsqueda (cualquier campo)
+app.get('/recomendados/buscar', async (req, res) => {
+  const query = `%${req.query.query}%`;
+  const [rows] = await db.execute(
+    `SELECT identificacion, nombre, apellido, celular, email, grupo_id
+     FROM recomendados
+     WHERE identificacion LIKE ? OR nombre LIKE ? OR apellido LIKE ? OR celular LIKE ? OR email LIKE ?`,
+    [query, query, query, query, query]
+  );
+  res.json(rows);
+});
+
+
 // GET /recomendados/:cedula - Obtener recomendado por cédula
 app.get('/recomendados/:cedula', async (req, res) => {
   try {
@@ -243,17 +254,6 @@ app.get('/recomendados/:cedula', async (req, res) => {
   }
 });
 
-// obtener recomendados por búsqueda (cualquier campo)
-app.get('/recomendados/buscar', async (req, res) => {
-  const query = `%${req.query.query}%`;
-  const [rows] = await db.execute(
-    `SELECT identificacion, nombre, apellido, celular, email, grupo_id
-     FROM recomendados
-     WHERE identificacion LIKE ? OR nombre LIKE ? OR apellido LIKE ? OR celular LIKE ? OR email LIKE ?`,
-    [query, query, query, query, query]
-  );
-  res.json(rows);
-});
 
 
 // POST /recomendados - Crear nuevo recomendado
@@ -420,6 +420,30 @@ app.get('/lideres', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+
+// GET /lideres/buscar?query=texto - Buscar líderes por cualquier campo
+app.get('/lideres/buscar', async (req, res) => {
+  const query = `%${req.query.query}%`;
+  try {
+    const [rows] = await db.execute(
+      `SELECT l.identificacion, l.nombre, l.apellido, l.celular, l.email,
+              l.recomendado_identificacion, r.nombre AS recomendado_nombre
+       FROM lideres l
+       LEFT JOIN recomendados r ON r.identificacion = l.recomendado_identificacion
+       WHERE l.identificacion LIKE ?
+          OR l.nombre LIKE ?
+          OR l.apellido LIKE ?
+          OR l.celular LIKE ?
+          OR l.email LIKE ?`,
+      [query, query, query, query, query]
+    );
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 
 // GET /lideres/:cedula - Obtener líder por cédula
 app.get('/lideres/:cedula', async (req, res) => {
@@ -594,28 +618,6 @@ app.get('/lideres/por-recomendado', async (req, res) => {
       [recomendado]
     );
     
-    res.json(rows);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// GET /lideres/buscar?query=texto - Buscar líderes por cualquier campo
-app.get('/lideres/buscar', async (req, res) => {
-  const query = `%${req.query.query}%`;
-  try {
-    const [rows] = await db.execute(
-      `SELECT l.identificacion, l.nombre, l.apellido, l.celular, l.email,
-              l.recomendado_identificacion, r.nombre AS recomendado_nombre
-       FROM lideres l
-       LEFT JOIN recomendados r ON r.identificacion = l.recomendado_identificacion
-       WHERE l.identificacion LIKE ?
-          OR l.nombre LIKE ?
-          OR l.apellido LIKE ?
-          OR l.celular LIKE ?
-          OR l.email LIKE ?`,
-      [query, query, query, query, query]
-    );
     res.json(rows);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -809,6 +811,32 @@ app.get('/votantes/total', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+
+// GET /votantes/buscar?query=texto - Buscar votantes por cualquier campo
+app.get('/votantes/buscar', async (req, res) => {
+  const query = `%${req.query.query}%`;
+  try {
+    const [rows] = await db.execute(
+      `SELECT v.identificacion, v.nombre, v.apellido, v.direccion, v.celular, v.email,
+              v.lider_identificacion, l.nombre AS lider_nombre, l.apellido AS lider_apellido
+       FROM votantes v
+       LEFT JOIN lideres l ON l.identificacion = v.lider_identificacion
+       WHERE v.identificacion LIKE ?
+          OR v.nombre LIKE ?
+          OR v.apellido LIKE ?
+          OR v.celular LIKE ?
+          OR v.email LIKE ?
+          OR v.direccion LIKE ?`,
+      [query, query, query, query, query, query]
+    );
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
 
 // GET /votantes/promedio_lider - Promedio de votantes por líder
 app.get('/votantes/promedio_lider', async (req, res) => {
@@ -1129,28 +1157,6 @@ app.delete('/votantes/:identificacion', async (req, res) => {
   }
 });
 
-// GET /votantes/buscar?query=texto - Buscar votantes por cualquier campo
-app.get('/votantes/buscar', async (req, res) => {
-  const query = `%${req.query.query}%`;
-  try {
-    const [rows] = await db.execute(
-      `SELECT v.identificacion, v.nombre, v.apellido, v.direccion, v.celular, v.email,
-              v.lider_identificacion, l.nombre AS lider_nombre, l.apellido AS lider_apellido
-       FROM votantes v
-       LEFT JOIN lideres l ON l.identificacion = v.lider_identificacion
-       WHERE v.identificacion LIKE ?
-          OR v.nombre LIKE ?
-          OR v.apellido LIKE ?
-          OR v.celular LIKE ?
-          OR v.email LIKE ?
-          OR v.direccion LIKE ?`,
-      [query, query, query, query, query, query]
-    );
-    res.json(rows);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
 
 
 // ==============================
