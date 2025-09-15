@@ -46,8 +46,96 @@ const dbConfig = {
 
 const db = mysql.createPool(dbConfig);
 
+// ==============================
+//        GRUPOS
+// ==============================
+
+// Obtener todos los grupos
+app.get('/grupos/total', async (req, res) => {
+  const [rows] = await db.execute('SELECT COUNT(*) AS total FROM grupos');
+  res.json(rows[0]);
+});
+
+// Actualizar nombre o descripción de un grupo
+app.put('/grupos/:id', async (req, res) => {
+  const { nombre, descripcion } = req.body;
+  await db.execute(
+    `UPDATE grupos SET nombre = ?, descripcion = ? WHERE id = ?`,
+    [nombre, descripcion, req.params.id]
+  );
+  res.json({ message: 'Grupo actualizado con éxito' });
+});
+
+// Obtener recomendados de un grupo
+app.get('/grupos/:id/recomendados', async (req, res) => {
+  const grupoId = req.params.id;
+  const [rows] = await db.execute(
+    `SELECT r.identificacion, r.nombre, r.apellido, r.celular, r.email
+     FROM recomendados r
+     WHERE r.grupo_id = ?`,
+    [grupoId]
+  );
+  res.json(rows);
+});
+
+// Agregar un recomendado a un grupo
+app.post('/grupos/:id/recomendados', async (req, res) => {
+  const grupoId = req.params.id;
+  const { recomendado_identificacion } = req.body;
+
+  await db.execute(
+    `UPDATE recomendados SET grupo_id = ? WHERE identificacion = ?`,
+    [grupoId, recomendado_identificacion]
+  );
+
+  res.json({ message: 'Recomendado agregado al grupo' });
+});
 
 
+// Eliminar un recomendado de un grupo
+app.delete('/grupos/:id/recomendados/:recomendadoId', async (req, res) => {
+  const { id, recomendadoId } = req.params;
+
+  await db.execute(
+    `UPDATE recomendados SET grupo_id = NULL WHERE grupo_id = ? AND identificacion = ?`,
+    [id, recomendadoId]
+  );
+
+  res.json({ message: 'Recomendado eliminado del grupo' });
+});
+
+// Obtener recomendados con sus líderes de un grupo
+app.get('/grupos/:id/recomendados-lideres', async (req, res) => {
+  const grupoId = req.params.id;
+  const [rows] = await db.execute(
+    `SELECT r.identificacion AS recomendado_id, r.nombre AS recomendado_nombre,
+            l.identificacion AS lider_id, l.nombre AS lider_nombre, l.apellido AS lider_apellido
+     FROM recomendados r
+     LEFT JOIN lideres l ON l.recomendado_identificacion = r.identificacion
+     WHERE r.grupo_id = ?
+     ORDER BY r.identificacion`,
+    [grupoId]
+  );
+  res.json(rows);
+});
+
+// Obtener estructura completa de un grupo (recomendados, líderes y votantes)
+app.get('/grupos/:id/completo', async (req, res) => {
+  const grupoId = req.params.id;
+  const [rows] = await db.execute(
+    `SELECT 
+        r.identificacion AS recomendado_id, r.nombre AS recomendado_nombre,
+        l.identificacion AS lider_id, l.nombre AS lider_nombre, l.apellido AS lider_apellido,
+        v.identificacion AS votante_id, v.nombre AS votante_nombre, v.apellido AS votante_apellido
+     FROM recomendados r
+     LEFT JOIN lideres l ON l.recomendado_identificacion = r.identificacion
+     LEFT JOIN votantes v ON v.lider_identificacion = l.identificacion
+     WHERE r.grupo_id = ?
+     ORDER BY r.identificacion, l.identificacion, v.identificacion`,
+    [grupoId]
+  );
+  res.json(rows);
+});
 
 // ==============================
 //        RECOMENDADOS
