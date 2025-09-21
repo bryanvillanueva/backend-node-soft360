@@ -259,7 +259,14 @@ app.get('/recomendados/:cedula', async (req, res) => {
 // POST /recomendados - Crear nuevo recomendado
 app.post('/recomendados', async (req, res) => {
   try {
-    const { identificacion, nombre = '', apellido = '', celular = '', email = '' } = req.body;
+    const { 
+      identificacion, 
+      nombre = '', 
+      apellido = '', 
+      celular = '', 
+      email = '', 
+      grupo_id = null 
+    } = req.body;
     
     // Verificar si ya existe
     const [existing] = await db.execute(
@@ -271,10 +278,17 @@ app.post('/recomendados', async (req, res) => {
       return res.status(400).json({ error: 'El recomendado ya existe' });
     }
 
-    // Insertar nuevo recomendado
+    // Insertar nuevo recomendado con grupo_id
     await db.execute(
-      'INSERT INTO recomendados (identificacion, nombre, apellido, celular, email) VALUES (?, ?, ?, ?, ?)',
-      [identificacion, nombre.toUpperCase(), apellido.toUpperCase(), celular.toUpperCase(), email.toUpperCase()]
+      'INSERT INTO recomendados (identificacion, nombre, apellido, celular, email, grupo_id) VALUES (?, ?, ?, ?, ?, ?)',
+      [
+        identificacion, 
+        nombre.toUpperCase(), 
+        apellido.toUpperCase(), 
+        celular.toUpperCase(), 
+        email.toUpperCase(),
+        grupo_id
+      ]
     );
     
     res.status(201).json({ message: 'Recomendado creado con éxito' });
@@ -293,7 +307,8 @@ app.put('/recomendados/:old_id', async (req, res) => {
       nombre = '',
       apellido = '',
       celular = '',
-      email = ''
+      email = '',
+      grupo_id = null
     } = req.body;
     
     await connection.beginTransaction();
@@ -309,12 +324,20 @@ app.put('/recomendados/:old_id', async (req, res) => {
       return res.status(404).json({ error: 'El recomendado no existe' });
     }
     
-    // Actualizar recomendado
+    // Actualizar recomendado con grupo_id
     await connection.execute(
       `UPDATE recomendados 
-       SET identificacion = ?, nombre = ?, apellido = ?, celular = ?, email = ? 
+       SET identificacion = ?, nombre = ?, apellido = ?, celular = ?, email = ?, grupo_id = ?
        WHERE identificacion = ?`,
-      [newId, nombre.toUpperCase(), apellido.toUpperCase(), celular.toUpperCase(), email.toUpperCase(), oldId]
+      [
+        newId, 
+        nombre.toUpperCase(), 
+        apellido.toUpperCase(), 
+        celular.toUpperCase(), 
+        email.toUpperCase(),
+        grupo_id,
+        oldId
+      ]
     );
 
     // Si también existe como líder, actualizar sus datos
@@ -546,6 +569,10 @@ app.post('/lideres', async (req, res) => {
       identificacion,
       nombre = '',
       apellido = '',
+      departamento = '',
+      ciudad = '',
+      barrio = '',
+      direccion = '',
       celular = '',
       email = '',
       recomendado_identificacion,
@@ -561,15 +588,19 @@ app.post('/lideres', async (req, res) => {
       return res.status(400).json({ error: 'El líder ya existe' });
     }
 
-    // Insertar nuevo líder
+    // Insertar nuevo líder con todos los campos
     await db.execute(
       `INSERT INTO lideres
-       (identificacion, nombre, apellido, celular, email, recomendado_identificacion, objetivo)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       (identificacion, nombre, apellido, departamento, ciudad, barrio, direccion, celular, email, recomendado_identificacion, objetivo)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         identificacion,
         nombre.toUpperCase(),
         apellido.toUpperCase(),
+        departamento.toUpperCase(),
+        ciudad.toUpperCase(),
+        barrio.toUpperCase(),
+        direccion.toUpperCase(),
         celular.toUpperCase(),
         email.toUpperCase(),
         recomendado_identificacion,
@@ -591,6 +622,10 @@ app.put('/lideres/:old_id', async (req, res) => {
       identificacion: newId,
       nombre = '',
       apellido = '',
+      departamento = '',
+      ciudad = '',
+      barrio = '',
+      direccion = '',
       celular = '',
       email = '',
       recomendado_identificacion,
@@ -609,16 +644,20 @@ app.put('/lideres/:old_id', async (req, res) => {
       return res.status(404).json({ error: 'Líder no encontrado' });
     }
     
-    // Actualizar líder
+    // Actualizar líder con todos los campos
     await connection.execute(
       `UPDATE lideres
-       SET identificacion = ?, nombre = ?, apellido = ?, celular = ?, email = ?, 
-           recomendado_identificacion = ?, objetivo = ?
+       SET identificacion = ?, nombre = ?, apellido = ?, departamento = ?, ciudad = ?, barrio = ?, 
+           direccion = ?, celular = ?, email = ?, recomendado_identificacion = ?, objetivo = ?
        WHERE identificacion = ?`,
       [
         newId,
         nombre.toUpperCase(),
         apellido.toUpperCase(),
+        departamento.toUpperCase(),
+        ciudad.toUpperCase(),
+        barrio.toUpperCase(),
+        direccion.toUpperCase(),
         celular.toUpperCase(),
         email.toUpperCase(),
         recomendado_identificacion,
@@ -972,6 +1011,9 @@ app.post('/votantes/upload_csv', upload.single('file'), async (req, res) => {
         const cedula = String(row.Cedula || 0).trim();
         const nombres = String(row.Nombres || '').toUpperCase().trim();
         const apellidos = String(row.Apellidos || '').toUpperCase().trim();
+        const departamento = String(row.Departamento || '').toUpperCase().trim();
+        const ciudad = String(row.Ciudad || '').toUpperCase().trim();
+        const barrio = String(row.Barrio || '').toUpperCase().trim();
         const direccion = String(row.Direccion || '').toUpperCase().trim();
         const celular = String(row.Celular || '0').toUpperCase().trim();
         const lider = String(row.Lider || 0).trim();
@@ -998,12 +1040,18 @@ app.post('/votantes/upload_csv', upload.single('file'), async (req, res) => {
             identificacion: cedula,
             nombre: existingVotante.nombre,
             apellido: existingVotante.apellido,
+            departamento: existingVotante.departamento,
+            ciudad: existingVotante.ciudad,
+            barrio: existingVotante.barrio,
             direccion: existingVotante.direccion,
             celular: existingVotante.celular,
             lider_identificacion: existingVotante.lider_identificacion,
             lider_nombre: leaderNombre,
             nombre_intentado: nombres,
             apellido_intentado: apellidos,
+            departamento_intentado: departamento,
+            ciudad_intentado: ciudad,
+            barrio_intentado: barrio,
             direccion_intentado: direccion,
             celular_intentado: celular,
             lider_intentado: lider
@@ -1020,17 +1068,20 @@ app.post('/votantes/upload_csv', upload.single('file'), async (req, res) => {
               identificacion: cedula,
               nombre: nombres,
               apellido: apellidos,
+              departamento: departamento,
+              ciudad: ciudad,
+              barrio: barrio,
               direccion: direccion,
               celular: celular,
               error: `Líder con identificación ${lider} no existe`
             });
           } else {
-            // Insertar nuevo votante
+            // Insertar nuevo votante con todos los campos
             await connection.execute(
               `INSERT INTO votantes
-               (identificacion, nombre, apellido, direccion, celular, email, lider_identificacion)
-               VALUES (?, ?, ?, ?, ?, ?, ?)`,
-              [cedula, nombres, apellidos, direccion, celular, null, lider]
+               (identificacion, nombre, apellido, departamento, ciudad, barrio, direccion, celular, email, lider_identificacion)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [cedula, nombres, apellidos, departamento, ciudad, barrio, direccion, celular, null, lider]
             );
             inserted++;
           }
@@ -1073,6 +1124,9 @@ app.post('/votantes', async (req, res) => {
       identificacion,
       nombre = '',
       apellido = '',
+      departamento = '',
+      ciudad = '',
+      barrio = '',
       direccion = '',
       celular = '',
       email = '',
@@ -1117,12 +1171,15 @@ app.post('/votantes', async (req, res) => {
       // Insertar nuevo votante
       await connection.execute(
         `INSERT INTO votantes
-         (identificacion, nombre, apellido, direccion, celular, email, lider_identificacion)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (identificacion, nombre, apellido, departamento, ciudad, barrio, direccion, celular, email, lider_identificacion)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           identificacion,
           nombre.toUpperCase(),
           apellido.toUpperCase(),
+          departamento.toUpperCase(),
+          ciudad.toUpperCase(),
+          barrio.toUpperCase(),
           direccion.toUpperCase(),
           celular.toUpperCase(),
           email.toUpperCase(),
@@ -1151,6 +1208,9 @@ app.put('/votantes', async (req, res) => {
       identificacion,
       nombre = '',
       apellido = '',
+      departamento = '',
+      ciudad = '',
+      barrio = '',
       direccion = '',
       celular = '',
       email = '',
@@ -1170,11 +1230,15 @@ app.put('/votantes', async (req, res) => {
     // Actualizar votante
     await db.execute(
       `UPDATE votantes
-       SET nombre = ?, apellido = ?, direccion = ?, celular = ?, email = ?, lider_identificacion = ?
+       SET nombre = ?, apellido = ?, departamento = ?, ciudad = ?, barrio = ?, 
+           direccion = ?, celular = ?, email = ?, lider_identificacion = ?
        WHERE identificacion = ?`,
       [
         nombre.toUpperCase(),
         apellido.toUpperCase(),
+        departamento.toUpperCase(),
+        ciudad.toUpperCase(),
+        barrio.toUpperCase(),
         direccion.toUpperCase(),
         celular.toUpperCase(),
         email.toUpperCase(),
