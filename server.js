@@ -1238,6 +1238,12 @@ app.post('/votantes', async (req, res) => {
 app.put('/votantes/:identificacion', async (req, res) => {
   try {
     const identificacion = req.params.identificacion; // Ahora viene de la URL
+    
+    // Validar que la identificación no esté vacía
+    if (!identificacion || identificacion.trim() === '') {
+      return res.status(400).json({ error: 'La identificación es requerida' });
+    }
+
     const {
       nombre = '',
       apellido = '',
@@ -1250,6 +1256,33 @@ app.put('/votantes/:identificacion', async (req, res) => {
       lider_identificacion
     } = req.body;
 
+    // Validar y limpiar datos para evitar errores de null/undefined
+    const cleanNombre = (nombre || '').toString();
+    const cleanApellido = (apellido || '').toString();
+    const cleanDepartamento = (departamento || '').toString();
+    const cleanCiudad = (ciudad || '').toString();
+    const cleanBarrio = (barrio || '').toString();
+    const cleanDireccion = (direccion || '').toString();
+    const cleanCelular = (celular || '').toString();
+    const cleanEmail = (email || '').toString();
+
+    // Debug: mostrar datos recibidos
+    console.log('Datos recibidos:', {
+      identificacion,
+      body: req.body,
+      cleaned: {
+        nombre: cleanNombre,
+        apellido: cleanApellido,
+        departamento: cleanDepartamento,
+        ciudad: cleanCiudad,
+        barrio: cleanBarrio,
+        direccion: cleanDireccion,
+        celular: cleanCelular,
+        email: cleanEmail,
+        lider_identificacion
+      }
+    });
+    
     // Verificar que existe
     const [existing] = await db.execute(
       'SELECT COUNT(*) as count FROM votantes WHERE identificacion = ?',
@@ -1267,19 +1300,19 @@ app.put('/votantes/:identificacion', async (req, res) => {
            direccion = ?, celular = ?, email = ?, lider_identificacion = ?
        WHERE identificacion = ?`,
       [
-        nombre.toUpperCase(),
-        apellido.toUpperCase(),
-        departamento.toUpperCase(),
-        ciudad.toUpperCase(),
-        barrio.toUpperCase(),
-        direccion.toUpperCase(),
-        celular.toUpperCase(),
-        email.toUpperCase(),
+        cleanNombre.toUpperCase(),
+        cleanApellido.toUpperCase(),
+        cleanDepartamento.toUpperCase(),
+        cleanCiudad.toUpperCase(),
+        cleanBarrio.toUpperCase(),
+        cleanDireccion.toUpperCase(),
+        cleanCelular.toUpperCase(),
+        cleanEmail.toUpperCase(),
         lider_identificacion,
         identificacion
       ]
     );
-
+    
     res.json({ message: 'Votante actualizado con éxito' });
   } catch (error) {
     res.status(500).json({ error: error.message });
