@@ -1234,6 +1234,37 @@ app.post('/votantes', async (req, res) => {
   }
 });
 
+// Función auxiliar para parsear la dirección concatenada
+function parseAddressString(addressString) {
+  const result = {
+    departamento: '',
+    ciudad: '',
+    barrio: '',
+    direccion: ''
+  };
+
+  if (!addressString || typeof addressString !== 'string') {
+    return result;
+  }
+
+  // Dividir por comas
+  const parts = addressString.split(',').map(part => part.trim());
+
+  for (const part of parts) {
+    if (part.toLowerCase().startsWith('departamento:')) {
+      result.departamento = part.replace(/^departamento:\s*/i, '').trim();
+    } else if (part.toLowerCase().startsWith('municipio:')) {
+      result.ciudad = part.replace(/^municipio:\s*/i, '').trim();
+    } else if (part.toLowerCase().startsWith('barrio:')) {
+      result.barrio = part.replace(/^barrio:\s*/i, '').trim();
+    } else if (part.toLowerCase().startsWith('dirección:') || part.toLowerCase().startsWith('direccion:')) {
+      result.direccion = part.replace(/^direcci[oó]n:\s*/i, '').trim();
+    }
+  }
+
+  return result;
+}
+
 // PUT /votantes/:identificacion - Actualizar votante
 app.put('/votantes/:identificacion', async (req, res) => {
   try {
@@ -1257,14 +1288,23 @@ app.put('/votantes/:identificacion', async (req, res) => {
     } = req.body;
 
     // Validar y limpiar datos para evitar errores de null/undefined
-    const cleanNombre = (nombre || '').toString();
-    const cleanApellido = (apellido || '').toString();
-    const cleanDepartamento = (departamento || '').toString();
-    const cleanCiudad = (ciudad || '').toString();
-    const cleanBarrio = (barrio || '').toString();
-    const cleanDireccion = (direccion || '').toString();
-    const cleanCelular = (celular || '').toString();
-    const cleanEmail = (email || '').toString();
+    let cleanNombre = (nombre || '').toString();
+    let cleanApellido = (apellido || '').toString();
+    let cleanDepartamento = (departamento || '').toString();
+    let cleanCiudad = (ciudad || '').toString();
+    let cleanBarrio = (barrio || '').toString();
+    let cleanDireccion = (direccion || '').toString();
+    let cleanCelular = (celular || '').toString();
+    let cleanEmail = (email || '').toString();
+
+    // Si la dirección viene en formato concatenado, parsearla
+    if (cleanDireccion && cleanDireccion.includes('Departamento:')) {
+      const parsedData = parseAddressString(cleanDireccion);
+      cleanDepartamento = parsedData.departamento || cleanDepartamento;
+      cleanCiudad = parsedData.ciudad || cleanCiudad;
+      cleanBarrio = parsedData.barrio || cleanBarrio;
+      cleanDireccion = parsedData.direccion || cleanDireccion;
+    }
 
     // Debug: mostrar datos recibidos
     console.log('Datos recibidos:', {
