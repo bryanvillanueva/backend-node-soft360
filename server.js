@@ -201,7 +201,7 @@ app.get('/grupos/:id/completo', async (req, res) => {
 app.get('/recomendados', async (req, res) => {
   try {
     const [rows] = await db.execute(
-      'SELECT identificacion, nombre, apellido, celular, email FROM recomendados'
+      'SELECT identificacion, nombre, apellido, departamento, ciudad, barrio, direccion, celular, email FROM recomendados'
     );
     res.json(rows);
   } catch (error) {
@@ -263,9 +263,10 @@ app.post('/recomendados', async (req, res) => {
       identificacion, 
       nombre = '', 
       apellido = '', 
-      direccion = '',
+      departamento = '',
       ciudad = '',
       barrio = '',
+      direccion = '',
       celular = '', 
       email = '', 
       grupo_id = null 
@@ -283,14 +284,15 @@ app.post('/recomendados', async (req, res) => {
 
     // Insertar nuevo recomendado con todos los campos
     await db.execute(
-      'INSERT INTO recomendados (identificacion, nombre, apellido, direccion, ciudad, barrio, celular, email, grupo_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO recomendados (identificacion, nombre, apellido, departamento, ciudad, barrio, direccion, celular, email, grupo_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [
         identificacion, 
         nombre.toUpperCase(), 
         apellido.toUpperCase(), 
-        direccion.toUpperCase(),
+        departamento.toUpperCase(),
         ciudad.toUpperCase(),
         barrio.toUpperCase(),
+        direccion.toUpperCase(),
         celular.toUpperCase(), 
         email.toUpperCase(),
         grupo_id
@@ -312,10 +314,11 @@ app.put('/recomendados/:old_id', async (req, res) => {
       identificacion: newId,
       nombre = '',
       apellido = '',
-      direccion = '',
+      departamento = '',
       ciudad = '',
       barrio = '',
       celular = '',
+      direccion = '',
       email = '',
       grupo_id = null
     } = req.body;
@@ -336,16 +339,17 @@ app.put('/recomendados/:old_id', async (req, res) => {
     // Actualizar recomendado con todos los campos
     await connection.execute(
       `UPDATE recomendados 
-       SET identificacion = ?, nombre = ?, apellido = ?, direccion = ?, ciudad = ?, barrio = ?, 
+       SET identificacion = ?, nombre = ?, apellido = ?, departamento = ?, ciudad = ?, barrio = ?, direccion = ?,
            celular = ?, email = ?, grupo_id = ?
        WHERE identificacion = ?`,
       [
         newId, 
         nombre.toUpperCase(), 
         apellido.toUpperCase(), 
-        direccion.toUpperCase(),
+        departamento.toUpperCase(),
         ciudad.toUpperCase(),
         barrio.toUpperCase(),
+        direccion.toUpperCase(),
         celular.toUpperCase(), 
         email.toUpperCase(),
         grupo_id,
@@ -356,16 +360,17 @@ app.put('/recomendados/:old_id', async (req, res) => {
     // Si también existe como líder, actualizar sus datos
     await connection.execute(
       `UPDATE lideres
-       SET identificacion = ?, nombre = ?, apellido = ?, direccion = ?, ciudad = ?, barrio = ?, 
+       SET identificacion = ?, nombre = ?, apellido = ?, departamento = ?, ciudad = ?, barrio = ?, direccion = ?,
            celular = ?, email = ?
        WHERE identificacion = ?`,
       [
         newId, 
         nombre.toUpperCase(), 
         apellido.toUpperCase(), 
-        direccion.toUpperCase(),
+        departamento.toUpperCase(),
         ciudad.toUpperCase(),
         barrio.toUpperCase(),
+        direccion.toUpperCase(),
         celular.toUpperCase(), 
         email.toUpperCase(), 
         oldId
@@ -476,7 +481,7 @@ app.delete('/recomendados/bulk', async (req, res) => {
 //          LÍDERES
 // ==============================
 
-// GET 1) /lideres - Obtener todos los líderes
+// GET /lideres - Obtener todos los líderes
 app.get('/lideres', async (req, res) => {
   try {
     const [rows] = await db.execute(
@@ -484,6 +489,10 @@ app.get('/lideres', async (req, res) => {
         l.identificacion AS lider_identificacion,
         l.nombre AS lider_nombre,
         l.apellido AS lider_apellido,
+        l.departamento AS lider_departamento,
+        l.ciudad AS lider_ciudad,
+        l.barrio AS lider_barrio,
+        l.direccion AS lider_direccion,
         l.celular AS lider_celular,
         l.email AS lider_email,
         l.objetivo AS lider_objetivo,
@@ -1225,11 +1234,11 @@ app.post('/votantes', async (req, res) => {
   }
 });
 
-// PUT /votantes - Actualizar votante
-app.put('/votantes', async (req, res) => {
+// PUT /votantes/:identificacion - Actualizar votante
+app.put('/votantes/:identificacion', async (req, res) => {
   try {
+    const identificacion = req.params.identificacion; // Ahora viene de la URL
     const {
-      identificacion,
       nombre = '',
       apellido = '',
       departamento = '',
@@ -1240,7 +1249,7 @@ app.put('/votantes', async (req, res) => {
       email = '',
       lider_identificacion
     } = req.body;
-    
+
     // Verificar que existe
     const [existing] = await db.execute(
       'SELECT COUNT(*) as count FROM votantes WHERE identificacion = ?',
@@ -1270,7 +1279,7 @@ app.put('/votantes', async (req, res) => {
         identificacion
       ]
     );
-    
+
     res.json({ message: 'Votante actualizado con éxito' });
   } catch (error) {
     res.status(500).json({ error: error.message });
