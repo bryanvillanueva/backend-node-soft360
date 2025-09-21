@@ -263,6 +263,9 @@ app.post('/recomendados', async (req, res) => {
       identificacion, 
       nombre = '', 
       apellido = '', 
+      direccion = '',
+      ciudad = '',
+      barrio = '',
       celular = '', 
       email = '', 
       grupo_id = null 
@@ -278,13 +281,16 @@ app.post('/recomendados', async (req, res) => {
       return res.status(400).json({ error: 'El recomendado ya existe' });
     }
 
-    // Insertar nuevo recomendado con grupo_id
+    // Insertar nuevo recomendado con todos los campos
     await db.execute(
-      'INSERT INTO recomendados (identificacion, nombre, apellido, celular, email, grupo_id) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT INTO recomendados (identificacion, nombre, apellido, direccion, ciudad, barrio, celular, email, grupo_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [
         identificacion, 
         nombre.toUpperCase(), 
         apellido.toUpperCase(), 
+        direccion.toUpperCase(),
+        ciudad.toUpperCase(),
+        barrio.toUpperCase(),
         celular.toUpperCase(), 
         email.toUpperCase(),
         grupo_id
@@ -306,6 +312,9 @@ app.put('/recomendados/:old_id', async (req, res) => {
       identificacion: newId,
       nombre = '',
       apellido = '',
+      direccion = '',
+      ciudad = '',
+      barrio = '',
       celular = '',
       email = '',
       grupo_id = null
@@ -324,15 +333,19 @@ app.put('/recomendados/:old_id', async (req, res) => {
       return res.status(404).json({ error: 'El recomendado no existe' });
     }
     
-    // Actualizar recomendado con grupo_id
+    // Actualizar recomendado con todos los campos
     await connection.execute(
       `UPDATE recomendados 
-       SET identificacion = ?, nombre = ?, apellido = ?, celular = ?, email = ?, grupo_id = ?
+       SET identificacion = ?, nombre = ?, apellido = ?, direccion = ?, ciudad = ?, barrio = ?, 
+           celular = ?, email = ?, grupo_id = ?
        WHERE identificacion = ?`,
       [
         newId, 
         nombre.toUpperCase(), 
         apellido.toUpperCase(), 
+        direccion.toUpperCase(),
+        ciudad.toUpperCase(),
+        barrio.toUpperCase(),
         celular.toUpperCase(), 
         email.toUpperCase(),
         grupo_id,
@@ -343,9 +356,20 @@ app.put('/recomendados/:old_id', async (req, res) => {
     // Si también existe como líder, actualizar sus datos
     await connection.execute(
       `UPDATE lideres
-       SET identificacion = ?, nombre = ?, apellido = ?, celular = ?, email = ?
+       SET identificacion = ?, nombre = ?, apellido = ?, direccion = ?, ciudad = ?, barrio = ?, 
+           celular = ?, email = ?
        WHERE identificacion = ?`,
-      [newId, nombre.toUpperCase(), apellido.toUpperCase(), celular.toUpperCase(), email.toUpperCase(), oldId]
+      [
+        newId, 
+        nombre.toUpperCase(), 
+        apellido.toUpperCase(), 
+        direccion.toUpperCase(),
+        ciudad.toUpperCase(),
+        barrio.toUpperCase(),
+        celular.toUpperCase(), 
+        email.toUpperCase(), 
+        oldId
+      ]
     );
 
     // Si cambió el ID, actualizar referencias en líderes
