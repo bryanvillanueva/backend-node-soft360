@@ -1377,6 +1377,31 @@ app.delete('/votantes/:identificacion', async (req, res) => {
   }
 });
 
+// DELETE /votantes/bulk - Borrado masivo de votantes
+app.delete('/votantes/bulk', async (req, res) => {
+  const { ids } = req.body || {};
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'Se requiere un array "ids" con al menos un ID' });
+  }
+  const connection = await db.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    // Eliminar votantes
+    const [result] = await connection.query(
+      'DELETE FROM votantes WHERE cedula IN (?)',
+      [ids]
+    );
+
+    await connection.commit();
+    res.json({ deleted: result.affectedRows });
+  } catch (error) {
+    await connection.rollback();
+    res.status(500).json({ error: error.message });
+  } finally {
+    connection.release();
+  }
+});
 
 
 // ==============================
