@@ -1,0 +1,135 @@
+Objetivo de la re-estructuración
+Escalar la relación votantes–líderes: pasar de 1:1 a N:M sin perder el rastro del primer líder que tuvo cada votante.
+Trazabilidad total: registrar cada acción (crear, actualizar, eliminar, asignar, desasignar, incidencia) en una bitácora central.
+Soft-delete seguro: nunca se pierde la data; los DELETE “mueven” el registro a una tabla _eliminados y dejan log.
+Auditoría de duplicidades: cuando un votante se asigna a un líder adicional, generar automáticamente una incidencia de duplicidad.
+
+Cambios en tablas existentes
+votantes
+➕ first_lider_identificacion VARCHAR(20) NULL (nuevo campo para persistir quién fue el primer líder).
+➖ lider_identificacion (eliminada; ahora la relación está en la tabla puente N:M).
+(El resto de columnas se mantienen.)
+
+Tablas nuevas
+1) votante_lider (tabla puente N:M)
+id BIGINT (PK, AI)
+votante_identificacion VARCHAR(20) (FK → votantes.identificacion)
+lider_identificacion VARCHAR(20) (FK → lideres.identificacion)
+assigned_at TIMESTAMP (auto NOW)
+assigned_by_user_id INT (FK opcional → usuarios.id)
+Índices: UNIQUE(votante_identificacion, lider_identificacion), índices por separado a cada FK.
+2) incidencias
+id BIGINT (PK, AI)
+tipo ENUM('DUPLICIDAD_LIDER','OTRO') (default ‘DUPLICIDAD_LIDER’)
+votante_identificacion (FK → votantes)
+lider_anterior_identificacion (FK → lideres, SET NULL on delete)
+lider_nuevo_identificacion (FK → lideres, SET NULL on delete)
+detalle TEXT
+created_by_user_id INT (FK → usuarios)
+created_at TIMESTAMP
+3) logs_acciones
+id BIGINT (PK, AI)
+user_id INT (FK → usuarios)
+accion ENUM('CREATE','UPDATE','DELETE','ASSIGN','UNASSIGN','INCIDENT')
+entidad ENUM('lider','votante','recomendado','asignacion','incidencia')
+entidad_id VARCHAR(64)
+detalles JSON
+ip, user_agent (opcionales)
+created_at TIMESTAMP
+4) Tablas de eliminados (soft-delete)
+lideres_eliminados (LIKE lideres + columnas: deleted_at, deleted_by, deleted_reason)
+recomendados_eliminados (LIKE recomendados + columnas: deleted_at, deleted_by, deleted_reason)
+votantes_eliminados (LIKE votantes + columnas: deleted_at, deleted_by, deleted_reason)
+
+Triggers creados
+Soft-delete (BEFORE DELETE):
+tr_lideres_before_delete → inserta en lideres_eliminados y loguea DELETE.
+tr_recomendados_before_delete → inserta en recomendados_eliminados y loguea DELETE.
+tr_votantes_before_delete → inserta en votantes_eliminados y loguea DELETE.
+Asignaciones N:M e incidencias:
+tr_vl_after_insert (AFTER INSERT ON votante_lider):
+Si el votante no tiene first_lider_identificacion, lo asigna con el líder nuevo.
+Si ya tiene un primer líder y el nuevo es diferente, crea una incidencia DUPLICIDAD_LIDER.
+Registra log ASSIGN (y INCIDENT si aplica).
+tr_vl_before_delete (BEFORE DELETE ON votante_lider):
+Registra log UNASSIGN.
+Logs de altas y actualizaciones (ejemplos):
+tr_votantes_after_insert → log CREATE de votante.
+tr_votantes_after_update → log UPDATE de votante.
+tr_lideres_after_insert → log CREATE de líder.
+tr_lideres_after_update → log UPDATE de líder.
+Nota operacional: Los triggers usan variables de sesión @current_user_id (y @delete_reason para soft-delete). La app debe setear esas variables antes de ejecutar operaciones para tener trazabilidad del usuario.
+
+Comportamiento clave tras la migración
+Un votante puede tener múltiples líderes a través de votante_lider.
+El primer líder queda fijo en votantes.first_lider_identificacion y no se sobrescribe.
+Cada nueva asignación distinta al primer líder genera incidencia automática + log.
+Los DELETE en tablas base no borran: mueven a _eliminados y crean log.
+
+Impacto en endpoints (refactor)
+Endpoints a modificar
+Crear/actualizar votante
+Ya no enviar/guardar lider_identificacion en votantes.
+Para asignar líder, usar el endpoint de asignación (ver abajo).
+Eliminar líder / votante / recomendado
+Mantener método DELETE, pero internamente es soft-delete (se dispara trigger).
+Permitir enviar delete_reason y setear @delete_reason antes del DELETE.
+Listados
+Cuando devuelvas un votante, incluir:
+first_lider_identificacion
+lideres_asignados: consultar votante_lider o hacer JOIN agregado.
+Endpoints nuevos (sugeridos)
+POST /asignaciones
+Body: { votante_id, lider_id }
+Acción: INSERT INTO votante_lider(...)
+Efectos: dispara trigger (ASSIGN + posible INCIDENT).
+DELETE /asignaciones
+Body/Query: { votante_id, lider_id }
+Acción: DELETE FROM votante_lider WHERE votante_identificacion=? AND lider_identificacion=?
+Efectos: dispara trigger (UNASSIGN).
+GET /votantes/:id/incidencias
+Lista incidencias de ese votante.
+GET /incidencias?tipo=&lider=&votante=&desde=&hasta=
+Filtros por tipo, líder, votante y rango de fechas.
+GET /logs?entidad=&accion=&user_id=&desde=&hasta=
+Auditoría central con filtros.
+GET /lideres/:id/votantes
+Retorna votantes asociados al líder (JOIN a votante_lider).
+GET /votantes/:id/lideres
+Retorna líderes asociados al votante.
+(Opcional) POST /incidencias si deseas registrar incidencias manuales (tipo OTRO), además de las automáticas.
+
+Secuencia de operaciones típica (desde la app)
+Asignar votante a un líder
+SET @current_user_id = <idUsuario>;
+INSERT INTO votante_lider (votante_identificacion, lider_identificacion, assigned_by_user_id) VALUES (?, ?, @current_user_id);
+→ Trigger fija primer líder si no existía; o crea incidencia si ya había uno distinto; siempre loguea ASSIGN.
+Eliminar (soft-delete)
+SET @current_user_id = <idUsuario>;
+SET @delete_reason = 'Motivo';
+DELETE FROM votantes WHERE identificacion=?;
+→ Trigger mueve a votantes_eliminados y loguea DELETE.
+
+Consideraciones para Codex (refactor rápido)
+DTOs/Models
+Votante: agregar first_lider_identificacion y lideres_asignados: string[].
+Eliminar lider_identificacion de payloads directos de votantes.
+Servicios
+Nuevo AssignmentsService con assign(votante, lider) y unassign(votante, lider).
+IncidenciasService (listado general y por votante).
+LogsService (consulta con paginación y filtros).
+Repositorios/Queries
+Reemplazar consultas que hacían JOIN directo votantes.lider_identificacion por JOIN a votante_lider.
+Añadir consultas agregadas para devolver lideres_asignados.
+Middleware
+Antes de ejecutar operaciones sensibles, setear @current_user_id (y @delete_reason en deletes).
+Tests
+Caso: primera asignación fija first_lider_identificacion.
+Caso: segunda asignación distinta genera incidencia y no cambia el “primer líder”.
+Caso: soft-delete mueve el registro y conserva integridad referencial.
+
+Beneficios esperados
+Consistencia funcional con la realidad (un votante puede apoyar a varios líderes).
+Auditabilidad total para decisiones y conflictos (quién, cuándo, qué cambió).
+Reversibilidad de eliminaciones (sin pérdida).
+Base para reportes de duplicidades, productividad por líder y análisis históricos.

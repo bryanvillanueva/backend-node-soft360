@@ -14,6 +14,29 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Middleware para setear variables de sesión MySQL
+app.use(async (req, res, next) => {
+  try {
+    // Obtener user_id del header o body (ajustar según tu autenticación)
+    const userId = req.headers['x-user-id'] || req.body.user_id || null;
+
+    // Guardar en req para uso posterior
+    req.userId = userId;
+
+    // Setear variable de sesión MySQL si existe userId
+    if (userId) {
+      await db.execute('SET @current_user_id = ?', [userId]);
+    } else {
+      await db.execute('SET @current_user_id = NULL');
+    }
+
+    next();
+  } catch (error) {
+    console.error('Error en middleware de sesión:', error);
+    next(); // Continuar aunque falle (para mantener compatibilidad)
+  }
+});
+
 // Configuración de multer para uploads
 const uploadDir = process.env.UPLOAD_DIR || 'data';
 const storage = multer.diskStorage({
@@ -175,17 +198,18 @@ app.get('/grupos/:id/recomendados-lideres', async (req, res) => {
   res.json(rows);
 });
 
-// Obtener estructura completa de un grupo (recomendados, líderes y votantes)
+// Obtener estructura completa de un grupo (recomendados, líderes y votantes) - con nueva estructura N:M
 app.get('/grupos/:id/completo', async (req, res) => {
   const grupoId = req.params.id;
   const [rows] = await db.execute(
-    `SELECT 
+    `SELECT
         r.identificacion AS recomendado_id, r.nombre AS recomendado_nombre,
         l.identificacion AS lider_id, l.nombre AS lider_nombre, l.apellido AS lider_apellido,
         v.identificacion AS votante_id, v.nombre AS votante_nombre, v.apellido AS votante_apellido
      FROM recomendados r
      LEFT JOIN lideres l ON l.recomendado_identificacion = r.identificacion
-     LEFT JOIN votantes v ON v.lider_identificacion = l.identificacion
+     LEFT JOIN votante_lider vl ON vl.lider_identificacion = l.identificacion
+     LEFT JOIN votantes v ON v.identificacion = vl.votante_identificacion
      WHERE r.grupo_id = ?
      ORDER BY r.identificacion, l.identificacion, v.identificacion`,
     [grupoId]
@@ -395,11 +419,12 @@ app.put('/recomendados/:old_id', async (req, res) => {
   }
 });
 
-// DELETE /recomendados/:identificacion - Eliminar recomendado
+// DELETE /recomendados/:identificacion - Eliminar recomendado (soft-delete)
 app.delete('/recomendados/:identificacion', async (req, res) => {
   const connection = await db.getConnection();
   try {
     const { identificacion } = req.params;
+    const { delete_reason } = req.body;
 
     await connection.beginTransaction();
 
@@ -414,28 +439,17 @@ app.delete('/recomendados/:identificacion', async (req, res) => {
       return res.status(404).json({ error: 'El recomendado no existe' });
     }
 
-    // Verificar líderes asociados
-    const [leaders] = await connection.execute(
-      'SELECT * FROM lideres WHERE recomendado_identificacion = ?',
-      [identificacion]
-    );
+    // Setear variable de sesión para el motivo de eliminación
+    await connection.execute('SET @delete_reason = ?', [delete_reason || 'Sin motivo especificado']);
 
-    if (leaders.length > 0) {
-      await connection.rollback();
-      return res.status(400).json({
-        error: 'No se puede eliminar, existen líderes asociados a este recomendado',
-        leaders: leaders
-      });
-    }
-
-    // Eliminar recomendado
+    // Soft-delete: el trigger se encargará de mover a recomendados_eliminados
     await connection.execute(
       'DELETE FROM recomendados WHERE identificacion = ?',
       [identificacion]
     );
 
     await connection.commit();
-    res.json({ message: 'Recomendado eliminado con éxito' });
+    res.json({ message: 'Recomendado eliminado con éxito (soft-delete)' });
   } catch (error) {
     await connection.rollback();
     res.status(500).json({ error: error.message });
@@ -444,9 +458,9 @@ app.delete('/recomendados/:identificacion', async (req, res) => {
   }
 });
 
-// DELETE /recomendados/bulk - Borrado masivo de recomendados
+// DELETE /recomendados/bulk - Borrado masivo de recomendados (soft-delete)
 app.delete('/recomendados/bulk', async (req, res) => {
-  const { ids } = req.body || {};
+  const { ids, delete_reason } = req.body || {};
   if (!Array.isArray(ids) || ids.length === 0) {
     return res.status(400).json({ error: 'Se requiere un array "ids" con al menos un ID' });
   }
@@ -454,13 +468,10 @@ app.delete('/recomendados/bulk', async (req, res) => {
   try {
     await connection.beginTransaction();
 
-    // Desasociar en líderes
-    await connection.query(
-      'UPDATE lideres SET recomendado_identificacion = NULL WHERE recomendado_identificacion IN (?)',
-      [ids]
-    );
+    // Setear variable de sesión para el motivo de eliminación
+    await connection.execute('SET @delete_reason = ?', [delete_reason || 'Eliminación masiva']);
 
-    // Eliminar recomendados
+    // Soft-delete: el trigger se encargará de mover a recomendados_eliminados
     const [result] = await connection.query(
       'DELETE FROM recomendados WHERE identificacion IN (?)',
       [ids]
@@ -553,11 +564,15 @@ app.get('/lideres/por-recomendado', async (req, res) => {
   }
 });
 
-// GET 4) /lideres/distribution - Distribución de líderes
+// GET 4) /lideres/distribution - Distribución de líderes (usa nueva estructura N:M)
 app.get('/lideres/distribution', async (req, res) => {
   try {
     const [rows] = await db.execute(
-      'SELECT lider_identificacion, COUNT(*) AS total_votantes FROM votantes GROUP BY lider_identificacion'
+      `SELECT vl.lider_identificacion, l.nombre, l.apellido, COUNT(*) AS total_votantes
+       FROM votante_lider vl
+       LEFT JOIN lideres l ON l.identificacion = vl.lider_identificacion
+       GROUP BY vl.lider_identificacion, l.nombre, l.apellido
+       ORDER BY total_votantes DESC`
     );
     res.json(rows);
   } catch (error) {
@@ -707,14 +722,19 @@ app.put('/lideres/:old_id', async (req, res) => {
       [newId, nombre.toUpperCase(), apellido.toUpperCase(), celular.toUpperCase(), email.toUpperCase(), oldId]
     );
 
-    // Si cambió el ID, actualizar referencias en votantes
+    // Si cambió el ID, actualizar referencias en votante_lider y first_lider
     if (oldId !== newId) {
       await connection.execute(
-        'UPDATE votantes SET lider_identificacion = ? WHERE lider_identificacion = ?',
+        'UPDATE votante_lider SET lider_identificacion = ? WHERE lider_identificacion = ?',
+        [newId, oldId]
+      );
+
+      await connection.execute(
+        'UPDATE votantes SET first_lider_identificacion = ? WHERE first_lider_identificacion = ?',
         [newId, oldId]
       );
     }
-    
+
     await connection.commit();
     res.json({ message: 'Líder (y recomendado si aplica) actualizado con éxito' });
   } catch (error) {
@@ -725,19 +745,41 @@ app.put('/lideres/:old_id', async (req, res) => {
   }
 });
 
-// DELETE /lideres/:cedula - Eliminar líder
+// DELETE /lideres/:cedula - Eliminar líder (soft-delete)
 app.delete('/lideres/:cedula', async (req, res) => {
+  const connection = await db.getConnection();
   try {
-    const [result] = await db.execute(
+    const { delete_reason } = req.body;
+
+    await connection.beginTransaction();
+
+    // Verificar que existe
+    const [existing] = await connection.execute(
+      'SELECT COUNT(*) as count FROM lideres WHERE identificacion = ?',
+      [req.params.cedula]
+    );
+
+    if (existing[0].count === 0) {
+      await connection.rollback();
+      return res.status(404).json({ error: 'Líder no encontrado' });
+    }
+
+    // Setear variable de sesión para el motivo de eliminación
+    await connection.execute('SET @delete_reason = ?', [delete_reason || 'Sin motivo especificado']);
+
+    // Soft-delete: el trigger se encargará de mover a lideres_eliminados
+    await connection.execute(
       'DELETE FROM lideres WHERE identificacion = ?',
       [req.params.cedula]
     );
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: 'Líder no encontrado' });
-    }
-    res.json({ message: 'Líder eliminado con éxito' });
+
+    await connection.commit();
+    res.json({ message: 'Líder eliminado con éxito (soft-delete)' });
   } catch (error) {
+    await connection.rollback();
     res.status(500).json({ error: error.message });
+  } finally {
+    connection.release();
   }
 });
 
@@ -746,70 +788,20 @@ app.delete('/lideres/:cedula', async (req, res) => {
 //          VOTANTES
 // ==============================
 
-// PUT /votantes/reasignar - Reasignar votante
+// DEPRECATED: Reasignación ahora se hace con endpoints de /asignaciones
+// Mantener temporalmente para compatibilidad hacia atrás
 app.put('/votantes/reasignar', async (req, res) => {
-  try {
-    const {
-      votante_identificacion,
-      old_lider_identificacion,
-      new_lider_identificacion,
-      lider_intentado,
-      nombre_intentado = '',
-      apellido_intentado = '',
-      direccion_intentado = '',
-      celular_intentado = ''
-    } = req.body;
-    
-    if (!votante_identificacion || !old_lider_identificacion || !new_lider_identificacion) {
-      return res.status(400).json({ error: 'Faltan parámetros requeridos' });
+  res.status(410).json({
+    error: 'Este endpoint está deprecated',
+    message: 'Use POST /asignaciones para asignar votante a nuevo líder, y DELETE /asignaciones para desasignar',
+    nueva_estructura: {
+      asignar: 'POST /asignaciones con { votante_identificacion, lider_identificacion }',
+      desasignar: 'DELETE /asignaciones con { votante_identificacion, lider_identificacion }'
     }
-    
-    const connection = await db.getConnection();
-    
-    if (new_lider_identificacion === old_lider_identificacion) {
-      // Mantener líder actual
-      const logLeaderId = lider_intentado && lider_intentado !== old_lider_identificacion 
-        ? lider_intentado 
-        : old_lider_identificacion;
-      
-      const logMessage = `Duplicado detectado: se mantuvo el líder actual (${old_lider_identificacion}) para el votante (ID ${votante_identificacion}). Información de Excel ignorada.\n`;
-      
-      await connection.execute(
-        'UPDATE lideres SET duplicados_log = CONCAT(IFNULL(duplicados_log, \'\'), ?) WHERE identificacion = ?',
-        [logMessage, logLeaderId]
-      );
-    } else {
-      // Reasignar votante
-      await connection.execute(
-        `UPDATE votantes 
-         SET lider_identificacion = ?, nombre = ?, apellido = ?, direccion = ?, celular = ?
-         WHERE identificacion = ? AND lider_identificacion = ?`,
-        [
-          new_lider_identificacion,
-          nombre_intentado.toUpperCase(),
-          apellido_intentado.toUpperCase(),
-          direccion_intentado.toUpperCase(),
-          celular_intentado.toUpperCase(),
-          votante_identificacion,
-          old_lider_identificacion
-        ]
-      );
-      
-      const logMessage = `Duplicado con reasignación: se reasignó el registro de votante (ID ${votante_identificacion}) del líder ${old_lider_identificacion} al líder ${new_lider_identificacion} con actualización de información.\n`;
-      
-      await connection.execute(
-        'UPDATE lideres SET duplicados_log = CONCAT(IFNULL(duplicados_log, \'\'), ?) WHERE identificacion = ?',
-        [logMessage, old_lider_identificacion]
-      );
-    }
-    
-    res.json({ message: 'Operación de reasignación completada con éxito' });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+  });
 });
 
-// GET /votantes - Obtener todos los votantes (con info básica del líder)
+// GET /votantes - Obtener todos los votantes (con first_lider y líderes asignados)
 app.get('/votantes', async (req, res) => {
   try {
     const { lider_id } = req.query; // filtro opcional
@@ -819,29 +811,38 @@ app.get('/votantes', async (req, res) => {
              v.departamento, v.ciudad, v.barrio, v.direccion,
              v.zona, v.puesto, v.mesa, v.direccion_puesto,
              v.celular, v.email,
-             v.lider_identificacion,
-             l.nombre AS lider_nombre, l.apellido AS lider_apellido
+             v.first_lider_identificacion,
+             fl.nombre AS first_lider_nombre, fl.apellido AS first_lider_apellido,
+             GROUP_CONCAT(DISTINCT vl.lider_identificacion ORDER BY vl.assigned_at SEPARATOR ',') AS lideres_asignados
       FROM votantes v
-      LEFT JOIN lideres l ON l.identificacion = v.lider_identificacion
+      LEFT JOIN lideres fl ON fl.identificacion = v.first_lider_identificacion
+      LEFT JOIN votante_lider vl ON vl.votante_identificacion = v.identificacion
     `;
     const params = [];
 
     if (lider_id) {
-      sql += " WHERE v.lider_identificacion = ?";
-      params.push(lider_id);
+      sql += " WHERE vl.lider_identificacion = ? OR v.first_lider_identificacion = ?";
+      params.push(lider_id, lider_id);
     }
 
-    sql += " ORDER BY v.identificacion";
+    sql += " GROUP BY v.identificacion ORDER BY v.identificacion";
 
     const [rows] = await db.execute(sql, params);
-    res.json(rows);
+
+    // Convertir lideres_asignados de string a array
+    const votantes = rows.map(row => ({
+      ...row,
+      lideres_asignados: row.lideres_asignados ? row.lideres_asignados.split(',') : []
+    }));
+
+    res.json(votantes);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
 
-// GET /votantes/por-lider - Obtener votantes por líder (con info básica del líder)
+// GET /votantes/por-lider - Obtener votantes por líder (usa nueva estructura N:M)
 app.get('/votantes/por-lider', async (req, res) => {
   try {
     const { lider } = req.query;
@@ -856,11 +857,12 @@ app.get('/votantes/por-lider', async (req, res) => {
       return res.status(404).json({ error: 'No se encontró un líder con esa identificación' });
     }
 
-    // Obtener votantes del líder
+    // Obtener votantes del líder desde la tabla votante_lider
     const [votantes] = await db.execute(
-      `SELECT identificacion, nombre, apellido, direccion, celular
-       FROM votantes
-       WHERE lider_identificacion = ?`,
+      `SELECT v.identificacion, v.nombre, v.apellido, v.direccion, v.celular
+       FROM votante_lider vl
+       INNER JOIN votantes v ON v.identificacion = vl.votante_identificacion
+       WHERE vl.lider_identificacion = ?`,
       [lider]
     );
 
@@ -880,13 +882,13 @@ app.get('/votantes/por-lider', async (req, res) => {
   }
 });
 
-// GET /votantes/por-lider-detalle - Igual que el anterior, pero podría incluir más detalle del líder
+// GET /votantes/por-lider-detalle - Igual que el anterior, con más detalle del líder (usa nueva estructura N:M)
 app.get('/votantes/por-lider-detalle', async (req, res) => {
   try {
     const { lider } = req.query;
 
     const [liderInfo] = await db.execute(
-      'SELECT nombre, apellido, identificacion, celular FROM lideres WHERE identificacion = ?',
+      'SELECT nombre, apellido, identificacion, celular, direccion FROM lideres WHERE identificacion = ?',
       [lider]
     );
 
@@ -895,9 +897,10 @@ app.get('/votantes/por-lider-detalle', async (req, res) => {
     }
 
     const [votantes] = await db.execute(
-      `SELECT identificacion, nombre, apellido, direccion, celular
-       FROM votantes
-       WHERE lider_identificacion = ?`,
+      `SELECT v.identificacion, v.nombre, v.apellido, v.direccion, v.celular
+       FROM votante_lider vl
+       INNER JOIN votantes v ON v.identificacion = vl.votante_identificacion
+       WHERE vl.lider_identificacion = ?`,
       [lider]
     );
 
@@ -935,24 +938,35 @@ app.get('/votantes/total', async (req, res) => {
 });
 
 
-// GET /votantes/buscar?query=texto - Buscar votantes por cualquier campo
+// GET /votantes/buscar?query=texto - Buscar votantes por cualquier campo (con nueva estructura)
 app.get('/votantes/buscar', async (req, res) => {
   const query = `%${req.query.query}%`;
   try {
     const [rows] = await db.execute(
       `SELECT v.identificacion, v.nombre, v.apellido, v.direccion, v.celular, v.email,
-              v.lider_identificacion, l.nombre AS lider_nombre, l.apellido AS lider_apellido
+              v.first_lider_identificacion,
+              fl.nombre AS first_lider_nombre, fl.apellido AS first_lider_apellido,
+              GROUP_CONCAT(DISTINCT vl.lider_identificacion ORDER BY vl.assigned_at SEPARATOR ',') AS lideres_asignados
        FROM votantes v
-       LEFT JOIN lideres l ON l.identificacion = v.lider_identificacion
+       LEFT JOIN lideres fl ON fl.identificacion = v.first_lider_identificacion
+       LEFT JOIN votante_lider vl ON vl.votante_identificacion = v.identificacion
        WHERE v.identificacion LIKE ?
           OR v.nombre LIKE ?
           OR v.apellido LIKE ?
           OR v.celular LIKE ?
           OR v.email LIKE ?
-          OR v.direccion LIKE ?`,
+          OR v.direccion LIKE ?
+       GROUP BY v.identificacion`,
       [query, query, query, query, query, query]
     );
-    res.json(rows);
+
+    // Convertir lideres_asignados de string a array
+    const votantes = rows.map(row => ({
+      ...row,
+      lideres_asignados: row.lideres_asignados ? row.lideres_asignados.split(',') : []
+    }));
+
+    res.json(votantes);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1011,7 +1025,7 @@ app.get('/votantes/tendencia_mensual', async (req, res) => {
   }
 });
 
-// POST /votantes/upload_csv - Cargar votantes desde CSV/Excel
+// POST /votantes/upload_csv - Cargar votantes desde CSV/Excel (con nueva estructura N:M)
 app.post('/votantes/upload_csv', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
@@ -1033,8 +1047,10 @@ app.post('/votantes/upload_csv', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'El archivo Excel no tiene las columnas requeridas' });
     }
 
-    let inserted = 0;
+    let insertedVotantes = 0;
+    let insertedAsignaciones = 0;
     const duplicados = [];
+    const errores = [];
 
     const connection = await db.getConnection();
     try {
@@ -1051,73 +1067,67 @@ app.post('/votantes/upload_csv', upload.single('file'), async (req, res) => {
         const celular = String(row.Celular || '0').toUpperCase().trim();
         const lider = String(row.Lider || 0).trim();
 
-        // Verificar si ya existe
+        // Verificar que el líder existe
+        const [leaderExists] = await connection.execute(
+          'SELECT COUNT(*) as count FROM lideres WHERE identificacion = ?',
+          [lider]
+        );
+
+        if (leaderExists[0].count === 0) {
+          errores.push({
+            identificacion: cedula,
+            nombre: nombres,
+            apellido: apellidos,
+            error: `Líder con identificación ${lider} no existe`
+          });
+          continue;
+        }
+
+        // Verificar si el votante ya existe
         const [existing] = await connection.execute(
           'SELECT * FROM votantes WHERE identificacion = ?',
           [cedula]
         );
 
         if (existing.length > 0) {
-          const existingVotante = existing[0];
-          let leaderNombre = null;
-
-          if (existingVotante.lider_identificacion) {
-            const [leaderInfo] = await connection.execute(
-              'SELECT nombre FROM lideres WHERE identificacion = ?',
-              [existingVotante.lider_identificacion]
-            );
-            leaderNombre = leaderInfo.length > 0 ? leaderInfo[0].nombre : null;
-          }
-
-          duplicados.push({
-            identificacion: cedula,
-            nombre: existingVotante.nombre,
-            apellido: existingVotante.apellido,
-            departamento: existingVotante.departamento,
-            ciudad: existingVotante.ciudad,
-            barrio: existingVotante.barrio,
-            direccion: existingVotante.direccion,
-            celular: existingVotante.celular,
-            lider_identificacion: existingVotante.lider_identificacion,
-            lider_nombre: leaderNombre,
-            nombre_intentado: nombres,
-            apellido_intentado: apellidos,
-            departamento_intentado: departamento,
-            ciudad_intentado: ciudad,
-            barrio_intentado: barrio,
-            direccion_intentado: direccion,
-            celular_intentado: celular,
-            lider_intentado: lider
-          });
-        } else {
-          // Verificar que el líder existe
-          const [leaderExists] = await connection.execute(
-            'SELECT COUNT(*) as count FROM lideres WHERE identificacion = ?',
-            [lider]
+          // Votante existe, verificar si ya tiene esta asignación
+          const [assignmentExists] = await connection.execute(
+            'SELECT COUNT(*) as count FROM votante_lider WHERE votante_identificacion = ? AND lider_identificacion = ?',
+            [cedula, lider]
           );
 
-          if (leaderExists[0].count === 0) {
+          if (assignmentExists[0].count > 0) {
             duplicados.push({
               identificacion: cedula,
-              nombre: nombres,
-              apellido: apellidos,
-              departamento: departamento,
-              ciudad: ciudad,
-              barrio: barrio,
-              direccion: direccion,
-              celular: celular,
-              error: `Líder con identificación ${lider} no existe`
+              nombre: existing[0].nombre,
+              apellido: existing[0].apellido,
+              mensaje: `Ya tiene asignación con el líder ${lider}`
             });
           } else {
-            // Insertar nuevo votante con todos los campos
+            // Crear nueva asignación (el trigger maneja first_lider e incidencias)
             await connection.execute(
-              `INSERT INTO votantes
-               (identificacion, nombre, apellido, departamento, ciudad, barrio, direccion, celular, email, lider_identificacion)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-              [cedula, nombres, apellidos, departamento, ciudad, barrio, direccion, celular, null, lider]
+              'INSERT INTO votante_lider (votante_identificacion, lider_identificacion, assigned_by_user_id) VALUES (?, ?, ?)',
+              [cedula, lider, req.userId]
             );
-            inserted++;
+            insertedAsignaciones++;
           }
+        } else {
+          // Insertar nuevo votante (sin lider_identificacion)
+          await connection.execute(
+            `INSERT INTO votantes
+             (identificacion, nombre, apellido, departamento, ciudad, barrio, direccion, celular, email)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [cedula, nombres, apellidos, departamento, ciudad, barrio, direccion, celular, null]
+          );
+
+          // Crear asignación con el líder (el trigger seteará first_lider automáticamente)
+          await connection.execute(
+            'INSERT INTO votante_lider (votante_identificacion, lider_identificacion, assigned_by_user_id) VALUES (?, ?, ?)',
+            [cedula, lider, req.userId]
+          );
+
+          insertedVotantes++;
+          insertedAsignaciones++;
         }
       }
 
@@ -1134,8 +1144,10 @@ app.post('/votantes/upload_csv', upload.single('file'), async (req, res) => {
 
     res.status(201).json({
       message: 'Carga completada',
-      insertados: inserted,
-      duplicados: duplicados
+      votantes_insertados: insertedVotantes,
+      asignaciones_insertadas: insertedAsignaciones,
+      duplicados: duplicados,
+      errores: errores
     });
   } catch (error) {
     // Limpiar archivo en caso de error
@@ -1150,7 +1162,7 @@ app.post('/votantes/upload_csv', upload.single('file'), async (req, res) => {
   }
 });
 
-// POST /votantes - Crear nuevo votante
+// POST /votantes - Crear nuevo votante (sin asignar líder directamente)
 app.post('/votantes', async (req, res) => {
   try {
     const {
@@ -1162,50 +1174,33 @@ app.post('/votantes', async (req, res) => {
       barrio = '',
       direccion = '',
       celular = '',
-      email = '',
-      lider_identificacion
+      email = ''
     } = req.body;
-    
+
     const connection = await db.getConnection();
     try {
       await connection.beginTransaction();
 
-      // Verificar si ya existe (con información del líder)
+      // Verificar si ya existe
       const [existing] = await connection.execute(
-        `SELECT v.*, l.nombre AS lider_nombre, l.apellido AS lider_apellido
-         FROM votantes v
-         LEFT JOIN lideres l ON v.lider_identificacion = l.identificacion
-         WHERE v.identificacion = ?`,
+        'SELECT * FROM votantes WHERE identificacion = ?',
         [identificacion]
       );
 
       if (existing.length > 0) {
-        const existingVotante = existing[0];
-
-        // Si no tiene nombre del líder pero sí tiene lider_identificacion
-        if (!existingVotante.lider_nombre && existingVotante.lider_identificacion) {
-          const [leaderInfo] = await connection.execute(
-            'SELECT nombre FROM lideres WHERE identificacion = ?',
-            [existingVotante.lider_identificacion]
-          );
-          if (leaderInfo.length > 0) {
-            existingVotante.lider_nombre = leaderInfo[0].nombre;
-          }
-        }
-
         await connection.rollback();
         return res.status(400).json({
           error: 'El votante ya existe',
           duplicado: true,
-          votante: existingVotante
+          votante: existing[0]
         });
       }
 
-      // Insertar nuevo votante
+      // Insertar nuevo votante (sin lider_identificacion)
       await connection.execute(
         `INSERT INTO votantes
-         (identificacion, nombre, apellido, departamento, ciudad, barrio, direccion, celular, email, lider_identificacion)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (identificacion, nombre, apellido, departamento, ciudad, barrio, direccion, celular, email)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           identificacion,
           nombre.toUpperCase(),
@@ -1215,20 +1210,21 @@ app.post('/votantes', async (req, res) => {
           barrio.toUpperCase(),
           direccion.toUpperCase(),
           celular.toUpperCase(),
-          email.toUpperCase(),
-          lider_identificacion
+          email.toUpperCase()
         ]
       );
 
       await connection.commit();
+      res.status(201).json({
+        message: 'Votante creado con éxito',
+        nota: 'Para asignar líder, usar el endpoint POST /asignaciones'
+      });
     } catch (error) {
       await connection.rollback();
       throw error;
     } finally {
       connection.release();
     }
-    
-    res.status(201).json({ message: 'Votante creado con éxito' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1265,11 +1261,11 @@ function parseAddressString(addressString) {
   return result;
 }
 
-// PUT /votantes/:identificacion - Actualizar votante
+// PUT /votantes/:identificacion - Actualizar votante (sin modificar asignaciones de líderes)
 app.put('/votantes/:identificacion', async (req, res) => {
   try {
-    const identificacion = req.params.identificacion; // Ahora viene de la URL
-    
+    const identificacion = req.params.identificacion;
+
     // Validar que la identificación no esté vacía
     if (!identificacion || identificacion.trim() === '') {
       return res.status(400).json({ error: 'La identificación es requerida' });
@@ -1283,11 +1279,10 @@ app.put('/votantes/:identificacion', async (req, res) => {
       barrio = '',
       direccion = '',
       celular = '',
-      email = '',
-      lider_identificacion
+      email = ''
     } = req.body;
 
-    // Validar y limpiar datos para evitar errores de null/undefined
+    // Validar y limpiar datos
     let cleanNombre = (nombre || '').toString();
     let cleanApellido = (apellido || '').toString();
     let cleanDepartamento = (departamento || '').toString();
@@ -1306,23 +1301,6 @@ app.put('/votantes/:identificacion', async (req, res) => {
       cleanDireccion = parsedData.direccion || cleanDireccion;
     }
 
-    // Debug: mostrar datos recibidos
-    console.log('Datos recibidos:', {
-      identificacion,
-      body: req.body,
-      cleaned: {
-        nombre: cleanNombre,
-        apellido: cleanApellido,
-        departamento: cleanDepartamento,
-        ciudad: cleanCiudad,
-        barrio: cleanBarrio,
-        direccion: cleanDireccion,
-        celular: cleanCelular,
-        email: cleanEmail,
-        lider_identificacion
-      }
-    });
-    
     // Verificar que existe
     const [existing] = await db.execute(
       'SELECT COUNT(*) as count FROM votantes WHERE identificacion = ?',
@@ -1333,11 +1311,11 @@ app.put('/votantes/:identificacion', async (req, res) => {
       return res.status(404).json({ error: 'El votante no existe' });
     }
 
-    // Actualizar votante
+    // Actualizar votante (sin tocar asignaciones de líderes)
     await db.execute(
       `UPDATE votantes
-       SET nombre = ?, apellido = ?, departamento = ?, ciudad = ?, barrio = ?, 
-           direccion = ?, celular = ?, email = ?, lider_identificacion = ?
+       SET nombre = ?, apellido = ?, departamento = ?, ciudad = ?, barrio = ?,
+           direccion = ?, celular = ?, email = ?
        WHERE identificacion = ?`,
       [
         cleanNombre.toUpperCase(),
@@ -1348,32 +1326,54 @@ app.put('/votantes/:identificacion', async (req, res) => {
         cleanDireccion.toUpperCase(),
         cleanCelular.toUpperCase(),
         cleanEmail.toUpperCase(),
-        lider_identificacion,
         identificacion
       ]
     );
-    
-    res.json({ message: 'Votante actualizado con éxito' });
+
+    res.json({
+      message: 'Votante actualizado con éxito',
+      nota: 'Para modificar asignaciones de líderes, usar endpoints de /asignaciones'
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// DELETE /votantes/:identificacion - Eliminar votante
+// DELETE /votantes/:identificacion - Eliminar votante (soft-delete)
 app.delete('/votantes/:identificacion', async (req, res) => {
+  const connection = await db.getConnection();
   try {
-    const [result] = await db.execute(
+    const { delete_reason } = req.body;
+
+    await connection.beginTransaction();
+
+    // Verificar que existe
+    const [existing] = await connection.execute(
+      'SELECT COUNT(*) as count FROM votantes WHERE identificacion = ?',
+      [req.params.identificacion]
+    );
+
+    if (existing[0].count === 0) {
+      await connection.rollback();
+      return res.status(404).json({ error: 'El votante no existe' });
+    }
+
+    // Setear variable de sesión para el motivo de eliminación
+    await connection.execute('SET @delete_reason = ?', [delete_reason || 'Sin motivo especificado']);
+
+    // Soft-delete: el trigger se encargará de mover a votantes_eliminados
+    await connection.execute(
       'DELETE FROM votantes WHERE identificacion = ?',
       [req.params.identificacion]
     );
-    
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: 'El votante no existe' });
-    }
-    
-    res.json({ message: 'Votante eliminado con éxito' });
+
+    await connection.commit();
+    res.json({ message: 'Votante eliminado con éxito (soft-delete)' });
   } catch (error) {
+    await connection.rollback();
     res.status(500).json({ error: error.message });
+  } finally {
+    connection.release();
   }
 });
 
@@ -1403,6 +1403,424 @@ app.delete('/votantes/bulk', async (req, res) => {
   }
 });
 
+
+// ==============================
+//        ASIGNACIONES (N:M)
+// ==============================
+
+// POST /asignaciones - Asignar votante a líder
+app.post('/asignaciones', async (req, res) => {
+  const connection = await db.getConnection();
+  try {
+    const { votante_identificacion, lider_identificacion } = req.body;
+
+    if (!votante_identificacion || !lider_identificacion) {
+      return res.status(400).json({ error: 'Se requieren votante_identificacion y lider_identificacion' });
+    }
+
+    await connection.beginTransaction();
+
+    // Verificar que el votante existe
+    const [votante] = await connection.execute(
+      'SELECT COUNT(*) as count FROM votantes WHERE identificacion = ?',
+      [votante_identificacion]
+    );
+
+    if (votante[0].count === 0) {
+      await connection.rollback();
+      return res.status(404).json({ error: 'Votante no encontrado' });
+    }
+
+    // Verificar que el líder existe
+    const [lider] = await connection.execute(
+      'SELECT COUNT(*) as count FROM lideres WHERE identificacion = ?',
+      [lider_identificacion]
+    );
+
+    if (lider[0].count === 0) {
+      await connection.rollback();
+      return res.status(404).json({ error: 'Líder no encontrado' });
+    }
+
+    // Verificar si ya existe la asignación
+    const [existing] = await connection.execute(
+      'SELECT COUNT(*) as count FROM votante_lider WHERE votante_identificacion = ? AND lider_identificacion = ?',
+      [votante_identificacion, lider_identificacion]
+    );
+
+    if (existing[0].count > 0) {
+      await connection.rollback();
+      return res.status(400).json({ error: 'La asignación ya existe' });
+    }
+
+    // Insertar asignación (el trigger se encargará de setear first_lider y crear incidencia si aplica)
+    await connection.execute(
+      'INSERT INTO votante_lider (votante_identificacion, lider_identificacion, assigned_by_user_id) VALUES (?, ?, ?)',
+      [votante_identificacion, lider_identificacion, req.userId]
+    );
+
+    await connection.commit();
+    res.status(201).json({
+      message: 'Asignación creada con éxito',
+      votante_identificacion,
+      lider_identificacion
+    });
+  } catch (error) {
+    await connection.rollback();
+    res.status(500).json({ error: error.message });
+  } finally {
+    connection.release();
+  }
+});
+
+// GET /asignaciones - Obtener todas las asignaciones con filtros opcionales
+app.get('/asignaciones', async (req, res) => {
+  try {
+    const { votante_id, lider_id } = req.query;
+
+    let sql = `
+      SELECT vl.id, vl.votante_identificacion, vl.lider_identificacion,
+             vl.assigned_at, vl.assigned_by_user_id,
+             v.nombre AS votante_nombre, v.apellido AS votante_apellido,
+             l.nombre AS lider_nombre, l.apellido AS lider_apellido,
+             u.username AS assigned_by
+      FROM votante_lider vl
+      LEFT JOIN votantes v ON v.identificacion = vl.votante_identificacion
+      LEFT JOIN lideres l ON l.identificacion = vl.lider_identificacion
+      LEFT JOIN usuarios u ON u.id = vl.assigned_by_user_id
+      WHERE 1=1
+    `;
+    const params = [];
+
+    if (votante_id) {
+      sql += ' AND vl.votante_identificacion = ?';
+      params.push(votante_id);
+    }
+
+    if (lider_id) {
+      sql += ' AND vl.lider_identificacion = ?';
+      params.push(lider_id);
+    }
+
+    sql += ' ORDER BY vl.assigned_at DESC';
+
+    const [rows] = await db.execute(sql, params);
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// DELETE /asignaciones - Desasignar votante de líder
+app.delete('/asignaciones', async (req, res) => {
+  const connection = await db.getConnection();
+  try {
+    const { votante_identificacion, lider_identificacion } = req.body;
+
+    if (!votante_identificacion || !lider_identificacion) {
+      return res.status(400).json({ error: 'Se requieren votante_identificacion y lider_identificacion' });
+    }
+
+    await connection.beginTransaction();
+
+    // Verificar que existe la asignación
+    const [existing] = await connection.execute(
+      'SELECT COUNT(*) as count FROM votante_lider WHERE votante_identificacion = ? AND lider_identificacion = ?',
+      [votante_identificacion, lider_identificacion]
+    );
+
+    if (existing[0].count === 0) {
+      await connection.rollback();
+      return res.status(404).json({ error: 'La asignación no existe' });
+    }
+
+    // Eliminar asignación (el trigger registrará el log UNASSIGN)
+    await connection.execute(
+      'DELETE FROM votante_lider WHERE votante_identificacion = ? AND lider_identificacion = ?',
+      [votante_identificacion, lider_identificacion]
+    );
+
+    await connection.commit();
+    res.json({ message: 'Asignación eliminada con éxito' });
+  } catch (error) {
+    await connection.rollback();
+    res.status(500).json({ error: error.message });
+  } finally {
+    connection.release();
+  }
+});
+
+// ==============================
+//        INCIDENCIAS
+// ==============================
+
+// GET /incidencias - Obtener todas las incidencias con filtros
+app.get('/incidencias', async (req, res) => {
+  try {
+    const { tipo, votante_id, lider_id, desde, hasta } = req.query;
+
+    let sql = `
+      SELECT i.id, i.tipo, i.votante_identificacion, i.lider_anterior_identificacion,
+             i.lider_nuevo_identificacion, i.detalle, i.created_at, i.created_by_user_id,
+             v.nombre AS votante_nombre, v.apellido AS votante_apellido,
+             la.nombre AS lider_anterior_nombre, la.apellido AS lider_anterior_apellido,
+             ln.nombre AS lider_nuevo_nombre, ln.apellido AS lider_nuevo_apellido,
+             u.username AS created_by
+      FROM incidencias i
+      LEFT JOIN votantes v ON v.identificacion = i.votante_identificacion
+      LEFT JOIN lideres la ON la.identificacion = i.lider_anterior_identificacion
+      LEFT JOIN lideres ln ON ln.identificacion = i.lider_nuevo_identificacion
+      LEFT JOIN usuarios u ON u.id = i.created_by_user_id
+      WHERE 1=1
+    `;
+    const params = [];
+
+    if (tipo) {
+      sql += ' AND i.tipo = ?';
+      params.push(tipo);
+    }
+
+    if (votante_id) {
+      sql += ' AND i.votante_identificacion = ?';
+      params.push(votante_id);
+    }
+
+    if (lider_id) {
+      sql += ' AND (i.lider_anterior_identificacion = ? OR i.lider_nuevo_identificacion = ?)';
+      params.push(lider_id, lider_id);
+    }
+
+    if (desde) {
+      sql += ' AND i.created_at >= ?';
+      params.push(desde);
+    }
+
+    if (hasta) {
+      sql += ' AND i.created_at <= ?';
+      params.push(hasta);
+    }
+
+    sql += ' ORDER BY i.created_at DESC';
+
+    const [rows] = await db.execute(sql, params);
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /votantes/:id/incidencias - Obtener incidencias de un votante específico
+app.get('/votantes/:id/incidencias', async (req, res) => {
+  try {
+    const [rows] = await db.execute(
+      `SELECT i.id, i.tipo, i.lider_anterior_identificacion, i.lider_nuevo_identificacion,
+              i.detalle, i.created_at,
+              la.nombre AS lider_anterior_nombre, la.apellido AS lider_anterior_apellido,
+              ln.nombre AS lider_nuevo_nombre, ln.apellido AS lider_nuevo_apellido
+       FROM incidencias i
+       LEFT JOIN lideres la ON la.identificacion = i.lider_anterior_identificacion
+       LEFT JOIN lideres ln ON ln.identificacion = i.lider_nuevo_identificacion
+       WHERE i.votante_identificacion = ?
+       ORDER BY i.created_at DESC`,
+      [req.params.id]
+    );
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /incidencias - Crear incidencia manual (tipo OTRO)
+app.post('/incidencias', async (req, res) => {
+  try {
+    const {
+      tipo = 'OTRO',
+      votante_identificacion,
+      lider_anterior_identificacion = null,
+      lider_nuevo_identificacion = null,
+      detalle = ''
+    } = req.body;
+
+    if (!votante_identificacion) {
+      return res.status(400).json({ error: 'Se requiere votante_identificacion' });
+    }
+
+    await db.execute(
+      `INSERT INTO incidencias
+       (tipo, votante_identificacion, lider_anterior_identificacion, lider_nuevo_identificacion, detalle, created_by_user_id)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [tipo, votante_identificacion, lider_anterior_identificacion, lider_nuevo_identificacion, detalle, req.userId]
+    );
+
+    res.status(201).json({ message: 'Incidencia creada con éxito' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==============================
+//        LOGS
+// ==============================
+
+// GET /logs - Obtener logs de acciones con filtros
+app.get('/logs', async (req, res) => {
+  try {
+    const { entidad, accion, user_id, desde, hasta, limit = 100, offset = 0 } = req.query;
+
+    let sql = `
+      SELECT l.id, l.user_id, l.accion, l.entidad, l.entidad_id,
+             l.detalles, l.ip, l.user_agent, l.created_at,
+             u.username
+      FROM logs_acciones l
+      LEFT JOIN usuarios u ON u.id = l.user_id
+      WHERE 1=1
+    `;
+    const params = [];
+
+    if (entidad) {
+      sql += ' AND l.entidad = ?';
+      params.push(entidad);
+    }
+
+    if (accion) {
+      sql += ' AND l.accion = ?';
+      params.push(accion);
+    }
+
+    if (user_id) {
+      sql += ' AND l.user_id = ?';
+      params.push(user_id);
+    }
+
+    if (desde) {
+      sql += ' AND l.created_at >= ?';
+      params.push(desde);
+    }
+
+    if (hasta) {
+      sql += ' AND l.created_at <= ?';
+      params.push(hasta);
+    }
+
+    sql += ' ORDER BY l.created_at DESC LIMIT ? OFFSET ?';
+    params.push(parseInt(limit), parseInt(offset));
+
+    const [rows] = await db.execute(sql, params);
+
+    // Parsear detalles JSON
+    const logs = rows.map(row => ({
+      ...row,
+      detalles: row.detalles ? JSON.parse(row.detalles) : null
+    }));
+
+    res.json(logs);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==============================
+//    TABLAS DE ELIMINADOS
+// ==============================
+
+// GET /lideres/eliminados - Obtener líderes eliminados
+app.get('/lideres/eliminados', async (req, res) => {
+  try {
+    const [rows] = await db.execute(
+      `SELECT identificacion, nombre, apellido, departamento, ciudad, barrio,
+              direccion, celular, email, recomendado_identificacion, objetivo,
+              deleted_at, deleted_by, deleted_reason,
+              u.username AS deleted_by_username
+       FROM lideres_eliminados le
+       LEFT JOIN usuarios u ON u.id = le.deleted_by
+       ORDER BY le.deleted_at DESC`
+    );
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /recomendados/eliminados - Obtener recomendados eliminados
+app.get('/recomendados/eliminados', async (req, res) => {
+  try {
+    const [rows] = await db.execute(
+      `SELECT identificacion, nombre, apellido, departamento, ciudad, barrio,
+              direccion, celular, email, grupo_id,
+              deleted_at, deleted_by, deleted_reason,
+              u.username AS deleted_by_username
+       FROM recomendados_eliminados re
+       LEFT JOIN usuarios u ON u.id = re.deleted_by
+       ORDER BY re.deleted_at DESC`
+    );
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /votantes/eliminados - Obtener votantes eliminados
+app.get('/votantes/eliminados', async (req, res) => {
+  try {
+    const [rows] = await db.execute(
+      `SELECT identificacion, nombre, apellido, departamento, ciudad, barrio,
+              direccion, zona, puesto, mesa, direccion_puesto, celular, email,
+              first_lider_identificacion,
+              deleted_at, deleted_by, deleted_reason,
+              u.username AS deleted_by_username
+       FROM votantes_eliminados ve
+       LEFT JOIN usuarios u ON u.id = ve.deleted_by
+       ORDER BY ve.deleted_at DESC`
+    );
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==============================
+//    ENDPOINTS DE RELACIONES
+// ==============================
+
+// GET /lideres/:id/votantes - Obtener votantes asociados a un líder
+app.get('/lideres/:id/votantes', async (req, res) => {
+  try {
+    const [rows] = await db.execute(
+      `SELECT DISTINCT v.identificacion, v.nombre, v.apellido, v.departamento,
+              v.ciudad, v.barrio, v.direccion, v.celular, v.email,
+              vl.assigned_at
+       FROM votante_lider vl
+       INNER JOIN votantes v ON v.identificacion = vl.votante_identificacion
+       WHERE vl.lider_identificacion = ?
+       ORDER BY vl.assigned_at DESC`,
+      [req.params.id]
+    );
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /votantes/:id/lideres - Obtener líderes asociados a un votante
+app.get('/votantes/:id/lideres', async (req, res) => {
+  try {
+    const [rows] = await db.execute(
+      `SELECT l.identificacion, l.nombre, l.apellido, l.departamento,
+              l.ciudad, l.barrio, l.celular, l.email, l.objetivo,
+              vl.assigned_at,
+              CASE WHEN v.first_lider_identificacion = l.identificacion THEN 1 ELSE 0 END AS es_primer_lider
+       FROM votante_lider vl
+       INNER JOIN lideres l ON l.identificacion = vl.lider_identificacion
+       INNER JOIN votantes v ON v.identificacion = vl.votante_identificacion
+       WHERE vl.votante_identificacion = ?
+       ORDER BY vl.assigned_at ASC`,
+      [req.params.id]
+    );
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // ==============================
 //    DASHBOARD Y REPORTES
