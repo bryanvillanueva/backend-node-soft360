@@ -1162,7 +1162,7 @@ app.post('/votantes/upload_csv', upload.single('file'), async (req, res) => {
   }
 });
 
-// POST /votantes - Crear nuevo votante (sin asignar líder directamente)
+// POST /votantes - Crear nuevo votante o asignar líder si ya existe
 app.post('/votantes', async (req, res) => {
   try {
     const {
@@ -1174,7 +1174,8 @@ app.post('/votantes', async (req, res) => {
       barrio = '',
       direccion = '',
       celular = '',
-      email = ''
+      email = '',
+      lider_identificacion = null // Ahora acepta líder opcional
     } = req.body;
 
     const connection = await db.getConnection();
@@ -1187,16 +1188,59 @@ app.post('/votantes', async (req, res) => {
         [identificacion]
       );
 
+      let asignacionCreada = false;
+      let asignacionYaExistia = false;
+
       if (existing.length > 0) {
-        await connection.rollback();
-        return res.status(400).json({
-          error: 'El votante ya existe',
+        // Si se proporciona líder, crear asignación
+        if (lider_identificacion) {
+          // Verificar que el líder existe
+          const [liderExists] = await connection.execute(
+            'SELECT COUNT(*) as count FROM lideres WHERE identificacion = ?',
+            [lider_identificacion]
+          );
+
+          if (liderExists[0].count === 0) {
+            await connection.rollback();
+            return res.status(404).json({
+              error: 'Líder no encontrado',
+              votante_existia: true
+            });
+          }
+
+          // Verificar si ya existe esta asignación
+          const [assignmentExists] = await connection.execute(
+            'SELECT COUNT(*) as count FROM votante_lider WHERE votante_identificacion = ? AND lider_identificacion = ?',
+            [identificacion, lider_identificacion]
+          );
+
+          if (assignmentExists[0].count > 0) {
+            asignacionYaExistia = true;
+          } else {
+            // Crear asignación (el trigger maneja first_lider e incidencias)
+            await connection.execute(
+              'INSERT INTO votante_lider (votante_identificacion, lider_identificacion, assigned_by_user_id) VALUES (?, ?, ?)',
+              [identificacion, lider_identificacion, req.userId]
+            );
+            asignacionCreada = true;
+          }
+        }
+
+        await connection.commit();
+        return res.status(200).json({
+          message: asignacionCreada
+            ? 'Votante ya existe. Nueva asignación de líder creada con éxito'
+            : asignacionYaExistia
+              ? 'El votante ya existe y ya está asignado a este líder'
+              : 'El votante ya existe',
           duplicado: true,
-          votante: existing[0]
+          votante: existing[0],
+          asignacion_creada: asignacionCreada,
+          asignacion_ya_existia: asignacionYaExistia
         });
       }
 
-      // Insertar nuevo votante (sin lider_identificacion)
+      // Insertar nuevo votante
       await connection.execute(
         `INSERT INTO votantes
          (identificacion, nombre, apellido, departamento, ciudad, barrio, direccion, celular, email)
@@ -1214,10 +1258,35 @@ app.post('/votantes', async (req, res) => {
         ]
       );
 
+      // Si se proporciona líder, crear asignación
+      if (lider_identificacion) {
+        // Verificar que el líder existe
+        const [liderExists] = await connection.execute(
+          'SELECT COUNT(*) as count FROM lideres WHERE identificacion = ?',
+          [lider_identificacion]
+        );
+
+        if (liderExists[0].count === 0) {
+          await connection.rollback();
+          return res.status(404).json({ error: 'Líder no encontrado' });
+        }
+
+        // Crear asignación (el trigger seteará first_lider automáticamente)
+        await connection.execute(
+          'INSERT INTO votante_lider (votante_identificacion, lider_identificacion, assigned_by_user_id) VALUES (?, ?, ?)',
+          [identificacion, lider_identificacion, req.userId]
+        );
+        asignacionCreada = true;
+      }
+
       await connection.commit();
       res.status(201).json({
-        message: 'Votante creado con éxito',
-        nota: 'Para asignar líder, usar el endpoint POST /asignaciones'
+        message: asignacionCreada
+          ? 'Votante creado y asignado al líder con éxito'
+          : 'Votante creado con éxito',
+        votante_creado: true,
+        asignacion_creada: asignacionCreada,
+        nota: !lider_identificacion ? 'Para asignar líder, usar el endpoint POST /asignaciones o incluir lider_identificacion en el body' : null
       });
     } catch (error) {
       await connection.rollback();
