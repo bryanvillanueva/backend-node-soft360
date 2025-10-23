@@ -33,11 +33,15 @@ Se migró el backend de Node.js para reflejar la nueva estructura de base de dat
   - Incluye información del primer líder con `first_lider_nombre` y `first_lider_apellido`
 
 #### `POST /votantes`
-- **Antes**: Requería `lider_identificacion` para asignar líder
+- **Antes**: Requería `lider_identificacion` para asignar líder y rechazaba votantes duplicados
 - **Ahora**:
-  - Ya NO acepta `lider_identificacion`
-  - Crear votante SIN asignar líder
-  - Para asignar líder, usar `POST /asignaciones`
+  - **ACEPTA** `lider_identificacion` opcional
+  - Si el votante **NO existe**: Lo crea y opcionalmente lo asigna al líder
+  - Si el votante **YA existe**:
+    - Si se proporciona `lider_identificacion`, crea la asignación (permite N:M)
+    - Si no se proporciona líder, retorna información del votante existente
+  - **Importante**: Ahora permite registrar el mismo votante múltiples veces con diferentes líderes
+  - Para asignar líder también se puede usar `POST /asignaciones`
 
 #### `PUT /votantes/:identificacion`
 - **Antes**: Permitía modificar `lider_identificacion`
@@ -54,11 +58,13 @@ Se migró el backend de Node.js para reflejar la nueva estructura de base de dat
   - Dispara trigger que registra en logs
 
 #### `POST /votantes/upload_csv`
-- **Antes**: Insertaba votantes con `lider_identificacion` directo
+- **Antes**: Insertaba votantes con `lider_identificacion` directo y rechazaba duplicados
 - **Ahora**:
-  - Crea votante sin `lider_identificacion`
+  - Si el votante **NO existe**: Lo crea y crea asignación
+  - Si el votante **YA existe**: Solo crea la asignación si no existe (permite N:M)
   - Crea asignación en `votante_lider` (trigger setea `first_lider` automáticamente)
-  - Retorna `votantes_insertados` y `asignaciones_insertadas`
+  - Retorna `votantes_insertados`, `asignaciones_insertadas`, `duplicados` y `errores`
+  - **Permite cargar mismo votante con diferentes líderes**
 
 #### `GET /votantes/buscar`
 - **Ahora**: Retorna `first_lider_identificacion` y `lideres_asignados`
@@ -299,11 +305,12 @@ Los siguientes triggers están implementados y son usados automáticamente:
 
 ### Breaking Changes
 
-1. **POST /votantes**: Ya no acepta `lider_identificacion`
+1. **POST /votantes**: Ahora acepta `lider_identificacion` opcional y permite votantes duplicados
 2. **PUT /votantes/:id**: Ya no modifica líderes
 3. **GET /votantes**: Cambió estructura de response (incluye arrays)
 4. **PUT /votantes/reasignar**: Endpoint deprecated (410)
 5. **DELETE endpoints**: Ahora requieren conexión con permisos para soft-delete
+6. **Comportamiento de duplicados**: Los endpoints ahora permiten registrar el mismo votante con diferentes líderes (N:M)
 
 ### Nuevos headers requeridos (opcional)
 
@@ -321,7 +328,7 @@ Los siguientes triggers están implementados y son usados automáticamente:
 
 ### Antes
 ```javascript
-// Crear votante con líder
+// Crear votante con líder (rechazaba duplicados)
 POST /votantes
 {
   "identificacion": "123",
@@ -330,20 +337,46 @@ POST /votantes
 }
 ```
 
-### Ahora
+### Ahora (Opción 1 - Recomendada)
 ```javascript
-// 1. Crear votante
+// Crear votante con líder (permite duplicados y crea asignación automática)
+POST /votantes
+{
+  "identificacion": "123",
+  "nombre": "Juan",
+  "lider_identificacion": "LID001"
+}
+
+// Si el votante ya existe, este endpoint crea la asignación al nuevo líder
+POST /votantes
+{
+  "identificacion": "123",  // Mismo votante
+  "nombre": "Juan",
+  "lider_identificacion": "LID002"  // Diferente líder
+}
+// Retorna: { message: "Votante ya existe. Nueva asignación de líder creada con éxito" }
+```
+
+### Ahora (Opción 2 - Manual)
+```javascript
+// 1. Crear votante sin líder
 POST /votantes
 {
   "identificacion": "123",
   "nombre": "Juan"
 }
 
-// 2. Asignar líder
+// 2. Asignar líder(es) manualmente
 POST /asignaciones
 {
   "votante_identificacion": "123",
   "lider_identificacion": "LID001"
+}
+
+POST /asignaciones
+{
+  "votante_identificacion": "123",
+  "lider_identificacion": "LID002"
 }
 ```
 
@@ -435,3 +468,41 @@ POST /asignaciones
 
 ## Fecha de migración
 **10 de octubre de 2025**
+
+---
+
+## ACTUALIZACIÓN - 23 de octubre de 2025
+
+### Cambio Importante: POST /votantes ahora permite votantes duplicados
+
+**Problema identificado:**
+El endpoint `POST /votantes` rechazaba votantes duplicados, lo cual impedía el flujo N:M esperado donde un votante puede pertenecer a múltiples líderes.
+
+**Solución implementada:**
+- `POST /votantes` ahora acepta `lider_identificacion` como parámetro opcional
+- Si el votante **NO existe**: Se crea el votante y se asigna al líder (si se proporciona)
+- Si el votante **YA existe**:
+  - Se crea solo la asignación al nuevo líder (si se proporciona)
+  - Retorna HTTP 200 con mensaje descriptivo
+  - No genera error, facilita el flujo de múltiples líderes
+
+**Casos de uso:**
+```javascript
+// Caso 1: Líder A registra votante nuevo
+POST /votantes { identificacion: "123", nombre: "Juan", lider_identificacion: "LID_A" }
+// Respuesta: { message: "Votante creado y asignado al líder con éxito", votante_creado: true }
+
+// Caso 2: Líder B registra el mismo votante
+POST /votantes { identificacion: "123", nombre: "Juan", lider_identificacion: "LID_B" }
+// Respuesta: { message: "Votante ya existe. Nueva asignación de líder creada con éxito", duplicado: true }
+
+// Caso 3: Intento de asignar al mismo líder nuevamente
+POST /votantes { identificacion: "123", nombre: "Juan", lider_identificacion: "LID_B" }
+// Respuesta: { message: "El votante ya existe y ya está asignado a este líder", asignacion_ya_existia: true }
+```
+
+**Beneficios:**
+- Simplifica el proceso de registro para múltiples líderes
+- Permite usar el mismo endpoint para crear votante y asignación
+- Compatible con `POST /asignaciones` (se puede usar cualquiera de los dos)
+- Los triggers de base de datos siguen manejando `first_lider_identificacion` e incidencias automáticamente
