@@ -15,26 +15,17 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Middleware para setear variables de sesión MySQL
-app.use(async (req, res, next) => {
-  try {
-    // Obtener user_id del header o body (ajustar según tu autenticación)
-    const userId = req.headers['x-user-id'] || req.body.user_id || null;
+// OPTIMIZADO: No ejecuta queries innecesarias, solo guarda userId en req
+app.use((req, res, next) => {
+  // Obtener user_id del header o body (ajustar según tu autenticación)
+  const userId = req.headers['x-user-id'] || req.body.user_id || null;
 
-    // Guardar en req para uso posterior
-    req.userId = userId;
+  // Guardar en req para uso posterior
+  req.userId = userId;
 
-    // Setear variable de sesión MySQL si existe userId
-    if (userId) {
-      await db.execute('SET @current_user_id = ?', [userId]);
-    } else {
-      await db.execute('SET @current_user_id = NULL');
-    }
-
-    next();
-  } catch (error) {
-    console.error('Error en middleware de sesión:', error);
-    next(); // Continuar aunque falle (para mantener compatibilidad)
-  }
+  // NO ejecutamos queries aquí para evitar timeouts
+  // Las conexiones individuales setearán @current_user_id cuando sea necesario
+  next();
 });
 
 // Configuración de multer para uploads
@@ -68,6 +59,21 @@ const dbConfig = {
 };
 
 const db = mysql.createPool(dbConfig);
+
+// Helper function para setear @current_user_id en una conexión específica
+async function setSessionUserId(connection, userId) {
+  if (!connection) return;
+  try {
+    if (userId) {
+      await connection.execute('SET @current_user_id = ?', [userId]);
+    } else {
+      await connection.execute('SET @current_user_id = NULL');
+    }
+  } catch (error) {
+    // Log pero no fallar
+    console.warn('Warning: No se pudo setear @current_user_id:', error.message);
+  }
+}
 
 // ==============================
 //        GRUPOS
@@ -428,6 +434,9 @@ app.delete('/recomendados/:identificacion', async (req, res) => {
 
     await connection.beginTransaction();
 
+    // Setear @current_user_id para auditoría
+    await setSessionUserId(connection, req.userId);
+
     // Verificar que existe
     const [existing] = await connection.execute(
       'SELECT COUNT(*) as count FROM recomendados WHERE identificacion = ?',
@@ -467,6 +476,9 @@ app.delete('/recomendados/bulk', async (req, res) => {
   const connection = await db.getConnection();
   try {
     await connection.beginTransaction();
+
+    // Setear @current_user_id para auditoría
+    await setSessionUserId(connection, req.userId);
 
     // Setear variable de sesión para el motivo de eliminación
     await connection.execute('SET @delete_reason = ?', [delete_reason || 'Eliminación masiva']);
@@ -752,6 +764,9 @@ app.delete('/lideres/:cedula', async (req, res) => {
     const { delete_reason } = req.body;
 
     await connection.beginTransaction();
+
+    // Setear @current_user_id para auditoría
+    await setSessionUserId(connection, req.userId);
 
     // Verificar que existe
     const [existing] = await connection.execute(
@@ -1061,6 +1076,9 @@ app.post('/votantes/upload_csv', upload.single('file'), async (req, res) => {
     const connection = await db.getConnection();
     try {
       await connection.beginTransaction();
+
+      // Setear @current_user_id para auditoría
+      await setSessionUserId(connection, req.userId);
 
       for (const row of data) {
         const cedula = String(row.Cedula || 0).trim();
@@ -1411,6 +1429,9 @@ app.delete('/votantes/:identificacion', async (req, res) => {
 
     await connection.beginTransaction();
 
+    // Setear @current_user_id para auditoría
+    await setSessionUserId(connection, req.userId);
+
     // Verificar que existe
     const [existing] = await connection.execute(
       'SELECT COUNT(*) as count FROM votantes WHERE identificacion = ?',
@@ -1507,6 +1528,9 @@ app.post('/capturas', async (req, res) => {
     }
 
     await connection.beginTransaction();
+
+    // Setear @current_user_id para auditoría
+    await setSessionUserId(connection, req.userId);
 
     // Verificar que el líder existe
     const [liderExists] = await connection.execute(
@@ -1801,6 +1825,9 @@ app.post('/asignaciones', async (req, res) => {
     }
 
     await connection.beginTransaction();
+
+    // Setear @current_user_id para auditoría
+    await setSessionUserId(connection, req.userId);
 
     // Verificar que el votante existe
     const [votante] = await connection.execute(
