@@ -471,38 +471,266 @@ POST /asignaciones
 
 ---
 
-## ACTUALIZACIÓN - 23 de octubre de 2025
+## ACTUALIZACIÓN MAYOR - 25 de octubre de 2025
 
-### Cambio Importante: POST /votantes ahora permite votantes duplicados
+### Nueva Arquitectura: Sistema de Staging con Capturas y Variantes
 
-**Problema identificado:**
-El endpoint `POST /votantes` rechazaba votantes duplicados, lo cual impedía el flujo N:M esperado donde un votante puede pertenecer a múltiples líderes.
+**Motivación:**
+Implementar un sistema robusto de captura de datos que permita:
+1. Auditoría total de lo reportado por cada líder (datos crudos)
+2. Detección automática de duplicados consigo mismo (mismo líder, distintas versiones)
+3. Detección de duplicados entre líderes
+4. Detección de conflictos de datos (variantes vs canónico)
+5. Trazabilidad completa para calidad de datos
 
-**Solución implementada:**
-- `POST /votantes` ahora acepta `lider_identificacion` como parámetro opcional
-- Si el votante **NO existe**: Se crea el votante y se asigna al líder (si se proporciona)
-- Si el votante **YA existe**:
-  - Se crea solo la asignación al nuevo líder (si se proporciona)
-  - Retorna HTTP 200 con mensaje descriptivo
-  - No genera error, facilita el flujo de múltiples líderes
+---
 
-**Casos de uso:**
+### **CAMBIO CRÍTICO: POST /votantes YA NO acepta lider_identificacion**
+
+**❌ Comportamiento anterior (23 de octubre):**
 ```javascript
-// Caso 1: Líder A registra votante nuevo
 POST /votantes { identificacion: "123", nombre: "Juan", lider_identificacion: "LID_A" }
-// Respuesta: { message: "Votante creado y asignado al líder con éxito", votante_creado: true }
-
-// Caso 2: Líder B registra el mismo votante
-POST /votantes { identificacion: "123", nombre: "Juan", lider_identificacion: "LID_B" }
-// Respuesta: { message: "Votante ya existe. Nueva asignación de líder creada con éxito", duplicado: true }
-
-// Caso 3: Intento de asignar al mismo líder nuevamente
-POST /votantes { identificacion: "123", nombre: "Juan", lider_identificacion: "LID_B" }
-// Respuesta: { message: "El votante ya existe y ya está asignado a este líder", asignacion_ya_existia: true }
+// Esto funcionaba y creaba asignación
 ```
 
-**Beneficios:**
-- Simplifica el proceso de registro para múltiples líderes
-- Permite usar el mismo endpoint para crear votante y asignación
-- Compatible con `POST /asignaciones` (se puede usar cualquiera de los dos)
-- Los triggers de base de datos siguen manejando `first_lider_identificacion` e incidencias automáticamente
+**✅ Nuevo comportamiento (25 de octubre):**
+```javascript
+POST /votantes { identificacion: "123", nombre: "Juan", lider_identificacion: "LID_A" }
+// ERROR 400: "lider_identificacion no está permitido en este endpoint"
+```
+
+**Razón del cambio:**
+- `POST /votantes` ahora es solo para crear votantes canónicos (maestro limpio)
+- Las asignaciones deben hacerse mediante:
+  - `POST /asignaciones` (asignación directa)
+  - `POST /capturas` (ingesta con staging, **RECOMENDADO**)
+
+---
+
+### Nuevas Tablas Implementadas
+
+#### 1. `capturas_votante` (staging crudo)
+Almacena exactamente lo que reporta cada líder, sin validar contra el canónico.
+
+**Campos clave:**
+- `lider_identificacion`: Quién reporta
+- `identificacion_reportada`: Cédula reportada
+- `nombre_reportado`, `apellido_reportado`, etc.: Datos tal cual los reportó el líder
+- `hash_datos`: Hash MD5 para detectar duplicados exactos
+- `canonical_identificacion`: FK al votante canónico (se llena automáticamente por trigger)
+- `estado`: ENUM('nuevo','resuelto','rechazado','fusionado')
+
+**UNIQUE constraint:** `(lider_identificacion, identificacion_reportada, hash_datos)`
+- Impide que un líder reporte exactamente los mismos datos dos veces
+
+#### 2. `votante_variantes` (foto consolidada por líder)
+Foto de cómo cada líder ve a cada votante canónico.
+
+**Campos clave:**
+- `canonical_identificacion`: FK al votante canónico
+- `lider_identificacion`: Líder que reportó esta versión
+- `captura_id`: FK a la captura original
+- Copia de todos los datos reportados
+- `is_current`: Flag si es la variante actual (última reportada)
+
+**UNIQUE constraint:** `(canonical_identificacion, lider_identificacion, hash_datos)`
+
+#### 3. `incidencias` (ampliada)
+Nuevos tipos de incidencias:
+- `DUPLICIDAD_LIDER`: Votante asignado a múltiples líderes (ya existía)
+- `DUPLICIDAD_CON_SI_MISMO`: ⭐ **NUEVO** - Líder reportó mismo votante con datos diferentes
+- `CONFLICTO_DATOS`: ⭐ **NUEVO** - Datos reportados difieren del canónico
+- `OTRO`: Incidencias manuales
+
+---
+
+### Nuevos Endpoints Implementados
+
+#### **POST /capturas** (⭐ ENDPOINT PRINCIPAL para ingesta)
+Ingesta de datos reportados por líderes con procesamiento automático.
+
+**Request:**
+```javascript
+POST /capturas
+{
+  "lider_identificacion": "LID001",
+  "identificacion_reportada": "123456",
+  "nombre_reportado": "JUAN",
+  "apellido_reportado": "PEREZ",
+  "departamento_reportado": "CUNDINAMARCA",
+  "ciudad_reportada": "BOGOTA",
+  // ... más campos opcionales
+}
+```
+
+**Response:**
+```javascript
+{
+  "message": "Captura procesada con éxito",
+  "captura_id": 45,
+  "canonical_identificacion": "123456",
+  "estado": "resuelto",
+  "incidencias_generadas": [
+    { "tipo": "DUPLICIDAD_CON_SI_MISMO", "detalle": "..." },
+    { "tipo": "CONFLICTO_DATOS", "detalle": "..." }
+  ]
+}
+```
+
+**Procesamiento automático (trigger `tr_capturas_after_insert`):**
+1. Crea votante canónico si no existe
+2. Crea asignación N:M en `votante_lider`
+3. Crea/actualiza variante en `votante_variantes`
+4. Genera incidencias automáticas:
+   - `DUPLICIDAD_CON_SI_MISMO`: Si líder ya reportó este votante con datos distintos
+   - `DUPLICIDAD_LIDER`: Si votante ya está asignado a otro líder
+   - `CONFLICTO_DATOS`: Si datos difieren del canónico
+
+#### **GET /capturas**
+Consultar capturas crudas con filtros.
+
+**Query params:**
+- `estado`: nuevo|resuelto|rechazado|fusionado
+- `lider`: ID del líder
+- `cc`: Cédula reportada
+- `desde`, `hasta`: Rango de fechas
+- `limit`, `offset`: Paginación
+
+#### **GET /variantes**
+Consultar variantes (foto por líder).
+
+**Query params:**
+- `cc`: Cédula canónica
+- `lider`: ID del líder
+- `current`: 0|1 (solo variantes actuales)
+- `desde`, `hasta`: Rango de fechas
+
+#### **GET /variantes/metricas**
+Métricas de calidad de datos por líder.
+
+**Response:**
+```javascript
+{
+  "metricas_por_lider": [
+    {
+      "lider_identificacion": "LID001",
+      "votantes_reales": 150,
+      "total_variantes": 175,
+      "duplicados_con_si_mismo": 25
+    }
+  ],
+  "duplicados_entre_lideres": {
+    "total": 30,
+    "casos": [...]
+  }
+}
+```
+
+---
+
+### Endpoints Modificados
+
+#### **POST /votantes**
+- ❌ **YA NO acepta** `lider_identificacion`
+- ✅ Solo crea votante canónico
+- Rechaza con error 400 si se envía `lider_identificacion`
+- Mensaje de error incluye endpoints válidos para asignaciones
+
+#### **POST /votantes/upload_csv**
+- ⭐ **Ahora usa `capturas_votante`** en lugar de insertar directo
+- Aprovecha triggers automáticos para procesar
+- Detecta duplicados exactos por líder
+- Genera incidencias automáticas
+- Retorna métricas de calidad de datos
+
+**Response actualizado:**
+```javascript
+{
+  "message": "Carga masiva procesada con éxito usando sistema de capturas (staging)",
+  "total_filas": 1000,
+  "capturas_insertadas": 980,
+  "duplicados_exactos": 15,
+  "errores": 5,
+  "nota": "Consulte GET /incidencias para ver duplicidades y conflictos detectados"
+}
+```
+
+---
+
+### Flujo de Trabajo Recomendado
+
+#### **Opción A: Ingesta con Staging (RECOMENDADO)**
+```javascript
+// Cada líder reporta sus datos tal cual
+POST /capturas {
+  lider_identificacion: "LID001",
+  identificacion_reportada: "123",
+  nombre_reportado: "JUAN CARLOS",  // Como lo conoce el líder
+  apellido_reportado: "PEREZ GOMEZ",
+  // ...
+}
+
+// El sistema automáticamente:
+// 1. Crea/actualiza canónico
+// 2. Crea asignación N:M
+// 3. Guarda variante por líder
+// 4. Detecta y registra incidencias
+```
+
+#### **Opción B: Asignación Directa (para casos manuales)**
+```javascript
+// 1. Crear votante canónico (si no existe)
+POST /votantes { identificacion: "123", nombre: "JUAN", apellido: "PEREZ" }
+
+// 2. Asignar a líder
+POST /asignaciones { votante_identificacion: "123", lider_identificacion: "LID001" }
+```
+
+---
+
+### Beneficios de la Nueva Arquitectura
+
+1. **Auditoría Total:** Todo lo reportado queda registrado en `capturas_votante`
+2. **Calidad de Datos:** Detección automática de:
+   - Duplicados exactos (mismo líder, mismos datos)
+   - Duplicados con variación (mismo líder, datos distintos)
+   - Duplicados entre líderes
+   - Conflictos de datos (vs canónico)
+3. **Métricas:** Conteo real de votantes por líder (descontando duplicados)
+4. **Trazabilidad:** Historial completo de variantes y cambios
+5. **Reversibilidad:** Staging permite análisis antes de consolidar
+
+---
+
+### Breaking Changes Resumen
+
+| Endpoint | Antes (23 oct) | Ahora (25 oct) |
+|----------|----------------|----------------|
+| `POST /votantes` | Aceptaba `lider_identificacion` | ❌ Rechaza `lider_identificacion` |
+| `POST /votantes/upload_csv` | Insertaba directo en `votantes` | ✅ Usa `capturas_votante` |
+| `GET /incidencias` | Solo `DUPLICIDAD_LIDER` | ✅ Incluye `DUPLICIDAD_CON_SI_MISMO`, `CONFLICTO_DATOS` |
+
+---
+
+### Migración desde versión anterior
+
+Si estaban usando:
+```javascript
+// ESTO YA NO FUNCIONA ❌
+POST /votantes { identificacion: "123", nombre: "Juan", lider_identificacion: "LID001" }
+```
+
+Ahora deben usar:
+```javascript
+// OPCIÓN 1: Ingesta con staging (recomendado) ✅
+POST /capturas {
+  lider_identificacion: "LID001",
+  identificacion_reportada: "123",
+  nombre_reportado: "Juan",
+  // ...
+}
+
+// OPCIÓN 2: Manual (dos pasos) ✅
+POST /votantes { identificacion: "123", nombre: "Juan" }
+POST /asignaciones { votante_identificacion: "123", lider_identificacion: "LID001" }
+```
