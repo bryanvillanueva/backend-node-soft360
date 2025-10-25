@@ -56,6 +56,10 @@ const dbConfig = {
     charset: 'utf8mb4',
     enableKeepAlive: true,
     keepAliveInitialDelay: 10000,
+    // Configuración de timeouts para evitar errores ETIMEDOUT
+    connectTimeout: 60000, // 60 segundos para conectar
+    acquireTimeout: 60000, // 60 segundos para adquirir conexión del pool
+    timeout: 60000, // 60 segundos timeout general de query
 };
 
 const db = mysql.createPool(dbConfig);
@@ -73,6 +77,47 @@ async function setSessionUserId(connection, userId) {
     // Log pero no fallar
     console.warn('Warning: No se pudo setear @current_user_id:', error.message);
   }
+}
+
+// Helper function para manejar errores de base de datos
+function handleDbError(error, res, customMessage = 'Error de base de datos') {
+  console.error('Database Error:', error);
+
+  if (error.code === 'ETIMEDOUT') {
+    return res.status(503).json({
+      error: 'Timeout de conexión a la base de datos',
+      mensaje: 'El servidor está experimentando alta carga. Por favor, intente nuevamente.',
+      code: 'ETIMEDOUT'
+    });
+  }
+
+  if (error.code === 'ECONNREFUSED') {
+    return res.status(503).json({
+      error: 'No se puede conectar a la base de datos',
+      mensaje: 'Servicio temporalmente no disponible.',
+      code: 'ECONNREFUSED'
+    });
+  }
+
+  res.status(500).json({
+    error: customMessage,
+    mensaje: process.env.NODE_ENV === 'development' ? error.message : 'Error interno del servidor'
+  });
+}
+
+// Wrapper para async/await que maneja errores automáticamente
+function asyncHandler(fn) {
+  return (req, res, next) => {
+    Promise.resolve(fn(req, res, next)).catch(error => {
+      // Si el error es de base de datos, usar handleDbError
+      if (error.code === 'ETIMEDOUT' || error.code === 'ECONNREFUSED' || error.sqlMessage) {
+        handleDbError(error, res);
+      } else {
+        // Pasar al middleware de manejo de errores global
+        next(error);
+      }
+    });
+  };
 }
 
 // ==============================
@@ -152,7 +197,7 @@ app.put('/grupos/:id', async (req, res) => {
 });
 
 // Obtener recomendados de un grupo
-app.get('/grupos/:id/recomendados', async (req, res) => {
+app.get('/grupos/:id/recomendados', asyncHandler(async (req, res) => {
   const grupoId = req.params.id;
   const [rows] = await db.execute(
     `SELECT r.identificacion, r.nombre, r.apellido, r.celular, r.email
@@ -161,10 +206,10 @@ app.get('/grupos/:id/recomendados', async (req, res) => {
     [grupoId]
   );
   res.json(rows);
-});
+}));
 
 // Agregar un recomendado a un grupo
-app.post('/grupos/:id/recomendados', async (req, res) => {
+app.post('/grupos/:id/recomendados', asyncHandler(async (req, res) => {
   const grupoId = req.params.id;
   const { recomendado_identificacion } = req.body;
 
@@ -174,7 +219,7 @@ app.post('/grupos/:id/recomendados', async (req, res) => {
   );
 
   res.json({ message: 'Recomendado agregado al grupo' });
-});
+}));
 
 
 // Eliminar un recomendado de un grupo
