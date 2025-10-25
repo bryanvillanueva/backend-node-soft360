@@ -49,3 +49,9 @@ coverage/
 
 # Optional eslint cache
 .eslintcache
+
+# Context files
+context/*.json
+context/*.md  
+context/*.txt
+context/

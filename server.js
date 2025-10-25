@@ -1025,8 +1025,11 @@ app.get('/votantes/tendencia_mensual', async (req, res) => {
   }
 });
 
-// POST /votantes/upload_csv - Cargar votantes desde CSV/Excel (con nueva estructura N:M)
+// POST /votantes/upload_csv - Cargar votantes desde CSV/Excel usando sistema de capturas (staging)
+// IMPORTANTE: Ahora usa capturas_votante para aprovechar triggers y detección automática de incidencias
 app.post('/votantes/upload_csv', upload.single('file'), async (req, res) => {
+  const crypto = require('crypto');
+
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No se subió ningún archivo' });
@@ -1038,18 +1041,21 @@ app.post('/votantes/upload_csv', upload.single('file'), async (req, res) => {
     const data = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]);
 
     // Verificar columnas requeridas
-    const requiredColumns = ['Cedula', 'Nombres', 'Apellidos', 'Direccion', 'Celular', 'Lider'];
+    const requiredColumns = ['Cedula', 'Nombres', 'Apellidos', 'Lider'];
     const hasRequiredColumns = requiredColumns.every(col =>
       data.length > 0 && data[0].hasOwnProperty(col)
     );
 
     if (!hasRequiredColumns) {
-      return res.status(400).json({ error: 'El archivo Excel no tiene las columnas requeridas' });
+      return res.status(400).json({
+        error: 'El archivo Excel no tiene las columnas mínimas requeridas',
+        columnas_requeridas: requiredColumns,
+        columnas_opcionales: ['Departamento', 'Ciudad', 'Barrio', 'Direccion', 'Celular', 'Email', 'Zona', 'Puesto', 'Mesa', 'DireccionPuesto']
+      });
     }
 
-    let insertedVotantes = 0;
-    let insertedAsignaciones = 0;
-    const duplicados = [];
+    let capturasInsertadas = 0;
+    const duplicadosExactos = [];
     const errores = [];
 
     const connection = await db.getConnection();
@@ -1058,13 +1064,18 @@ app.post('/votantes/upload_csv', upload.single('file'), async (req, res) => {
 
       for (const row of data) {
         const cedula = String(row.Cedula || 0).trim();
-        const nombres = String(row.Nombres || '').toUpperCase().trim();
-        const apellidos = String(row.Apellidos || '').toUpperCase().trim();
-        const departamento = String(row.Departamento || '').toUpperCase().trim();
-        const ciudad = String(row.Ciudad || '').toUpperCase().trim();
-        const barrio = String(row.Barrio || '').toUpperCase().trim();
-        const direccion = String(row.Direccion || '').toUpperCase().trim();
-        const celular = String(row.Celular || '0').toUpperCase().trim();
+        const nombres = String(row.Nombres || '').trim();
+        const apellidos = String(row.Apellidos || '').trim();
+        const departamento = String(row.Departamento || '').trim();
+        const ciudad = String(row.Ciudad || '').trim();
+        const barrio = String(row.Barrio || '').trim();
+        const direccion = String(row.Direccion || '').trim();
+        const zona = String(row.Zona || '').trim();
+        const puesto = String(row.Puesto || '').trim();
+        const mesa = String(row.Mesa || '').trim();
+        const direccionPuesto = String(row.DireccionPuesto || '').trim();
+        const celular = String(row.Celular || '').trim();
+        const email = String(row.Email || '').trim();
         const lider = String(row.Lider || 0).trim();
 
         // Verificar que el líder existe
@@ -1075,6 +1086,7 @@ app.post('/votantes/upload_csv', upload.single('file'), async (req, res) => {
 
         if (leaderExists[0].count === 0) {
           errores.push({
+            fila: data.indexOf(row) + 2, // +2 porque Excel empieza en 1 y tiene header
             identificacion: cedula,
             nombre: nombres,
             apellido: apellidos,
@@ -1083,51 +1095,82 @@ app.post('/votantes/upload_csv', upload.single('file'), async (req, res) => {
           continue;
         }
 
-        // Verificar si el votante ya existe
-        const [existing] = await connection.execute(
-          'SELECT * FROM votantes WHERE identificacion = ?',
-          [cedula]
-        );
+        // Calcular hash de datos para detección de duplicados exactos
+        const datosParaHash = [
+          nombres,
+          apellidos,
+          departamento,
+          ciudad,
+          barrio,
+          direccion,
+          celular,
+          email
+        ].join('|').toUpperCase();
 
-        if (existing.length > 0) {
-          // Votante existe, verificar si ya tiene esta asignación
-          const [assignmentExists] = await connection.execute(
-            'SELECT COUNT(*) as count FROM votante_lider WHERE votante_identificacion = ? AND lider_identificacion = ?',
-            [cedula, lider]
+        const hash_datos = crypto.createHash('md5').update(datosParaHash).digest('hex');
+
+        try {
+          // Insertar en capturas_votante (el trigger procesará todo automáticamente)
+          await connection.execute(
+            `INSERT INTO capturas_votante (
+              lider_identificacion,
+              identificacion_reportada,
+              nombre_reportado,
+              apellido_reportado,
+              departamento_reportado,
+              ciudad_reportada,
+              barrio_reportado,
+              direccion_reportada,
+              zona_reportada,
+              puesto_reportado,
+              mesa_reportada,
+              direccion_puesto_reportada,
+              celular_reportado,
+              email_reportado,
+              hash_datos,
+              created_by_user_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              lider,
+              cedula,
+              nombres.toUpperCase(),
+              apellidos.toUpperCase(),
+              departamento.toUpperCase(),
+              ciudad.toUpperCase(),
+              barrio.toUpperCase(),
+              direccion.toUpperCase(),
+              zona.toUpperCase(),
+              puesto.toUpperCase(),
+              mesa.toUpperCase(),
+              direccionPuesto.toUpperCase(),
+              celular.toUpperCase(),
+              email.toUpperCase(),
+              hash_datos,
+              req.userId
+            ]
           );
 
-          if (assignmentExists[0].count > 0) {
-            duplicados.push({
+          capturasInsertadas++;
+        } catch (capturaError) {
+          // Manejo de duplicados exactos (mismo líder, misma cédula, mismos datos)
+          if (capturaError.code === 'ER_DUP_ENTRY') {
+            duplicadosExactos.push({
+              fila: data.indexOf(row) + 2,
               identificacion: cedula,
-              nombre: existing[0].nombre,
-              apellido: existing[0].apellido,
-              mensaje: `Ya tiene asignación con el líder ${lider}`
+              nombre: nombres,
+              apellido: apellidos,
+              lider,
+              mensaje: 'Duplicado exacto: este líder ya reportó estos datos para este votante'
             });
           } else {
-            // Crear nueva asignación (el trigger maneja first_lider e incidencias)
-            await connection.execute(
-              'INSERT INTO votante_lider (votante_identificacion, lider_identificacion, assigned_by_user_id) VALUES (?, ?, ?)',
-              [cedula, lider, req.userId]
-            );
-            insertedAsignaciones++;
+            errores.push({
+              fila: data.indexOf(row) + 2,
+              identificacion: cedula,
+              nombre: nombres,
+              apellido: apellidos,
+              error: capturaError.message
+            });
           }
-        } else {
-          // Insertar nuevo votante (sin lider_identificacion)
-          await connection.execute(
-            `INSERT INTO votantes
-             (identificacion, nombre, apellido, departamento, ciudad, barrio, direccion, celular, email)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [cedula, nombres, apellidos, departamento, ciudad, barrio, direccion, celular, null]
-          );
-
-          // Crear asignación con el líder (el trigger seteará first_lider automáticamente)
-          await connection.execute(
-            'INSERT INTO votante_lider (votante_identificacion, lider_identificacion, assigned_by_user_id) VALUES (?, ?, ?)',
-            [cedula, lider, req.userId]
-          );
-
-          insertedVotantes++;
-          insertedAsignaciones++;
         }
       }
 
@@ -1143,11 +1186,16 @@ app.post('/votantes/upload_csv', upload.single('file'), async (req, res) => {
     fs.unlinkSync(req.file.path);
 
     res.status(201).json({
-      message: 'Carga completada',
-      votantes_insertados: insertedVotantes,
-      asignaciones_insertadas: insertedAsignaciones,
-      duplicados: duplicados,
-      errores: errores
+      message: 'Carga masiva procesada con éxito usando sistema de capturas (staging)',
+      total_filas: data.length,
+      capturas_insertadas: capturasInsertadas,
+      duplicados_exactos: duplicadosExactos.length,
+      errores: errores.length,
+      detalles: {
+        duplicados_exactos: duplicadosExactos,
+        errores: errores
+      },
+      nota: 'Los triggers automáticos han procesado: canónicos, asignaciones N:M, variantes e incidencias. Consulte GET /incidencias para ver duplicidades y conflictos detectados.'
     });
   } catch (error) {
     // Limpiar archivo en caso de error
@@ -1162,7 +1210,8 @@ app.post('/votantes/upload_csv', upload.single('file'), async (req, res) => {
   }
 });
 
-// POST /votantes - Crear nuevo votante o asignar líder si ya existe
+// POST /votantes - Crear nuevo votante canónico (SIN asignar líder directamente)
+// Para asignar líder: usar POST /asignaciones o POST /capturas
 app.post('/votantes', async (req, res) => {
   try {
     const {
@@ -1175,8 +1224,20 @@ app.post('/votantes', async (req, res) => {
       direccion = '',
       celular = '',
       email = '',
-      lider_identificacion = null // Ahora acepta líder opcional
+      lider_identificacion // Se rechaza si se envía
     } = req.body;
+
+    // IMPORTANTE: Rechazar lider_identificacion según nueva arquitectura
+    if (lider_identificacion !== undefined) {
+      return res.status(400).json({
+        error: 'lider_identificacion no está permitido en este endpoint',
+        mensaje: 'Para asociar votantes a líderes, use POST /asignaciones o POST /capturas',
+        endpoints_validos: {
+          asignacion_directa: 'POST /asignaciones con { votante_identificacion, lider_identificacion }',
+          ingesta_con_staging: 'POST /capturas con todos los datos reportados por el líder'
+        }
+      });
+    }
 
     const connection = await db.getConnection();
     try {
@@ -1188,59 +1249,17 @@ app.post('/votantes', async (req, res) => {
         [identificacion]
       );
 
-      let asignacionCreada = false;
-      let asignacionYaExistia = false;
-
       if (existing.length > 0) {
-        // Si se proporciona líder, crear asignación
-        if (lider_identificacion) {
-          // Verificar que el líder existe
-          const [liderExists] = await connection.execute(
-            'SELECT COUNT(*) as count FROM lideres WHERE identificacion = ?',
-            [lider_identificacion]
-          );
-
-          if (liderExists[0].count === 0) {
-            await connection.rollback();
-            return res.status(404).json({
-              error: 'Líder no encontrado',
-              votante_existia: true
-            });
-          }
-
-          // Verificar si ya existe esta asignación
-          const [assignmentExists] = await connection.execute(
-            'SELECT COUNT(*) as count FROM votante_lider WHERE votante_identificacion = ? AND lider_identificacion = ?',
-            [identificacion, lider_identificacion]
-          );
-
-          if (assignmentExists[0].count > 0) {
-            asignacionYaExistia = true;
-          } else {
-            // Crear asignación (el trigger maneja first_lider e incidencias)
-            await connection.execute(
-              'INSERT INTO votante_lider (votante_identificacion, lider_identificacion, assigned_by_user_id) VALUES (?, ?, ?)',
-              [identificacion, lider_identificacion, req.userId]
-            );
-            asignacionCreada = true;
-          }
-        }
-
-        await connection.commit();
-        return res.status(200).json({
-          message: asignacionCreada
-            ? 'Votante ya existe. Nueva asignación de líder creada con éxito'
-            : asignacionYaExistia
-              ? 'El votante ya existe y ya está asignado a este líder'
-              : 'El votante ya existe',
+        await connection.rollback();
+        return res.status(400).json({
+          error: 'El votante ya existe en el sistema canónico',
           duplicado: true,
           votante: existing[0],
-          asignacion_creada: asignacionCreada,
-          asignacion_ya_existia: asignacionYaExistia
+          nota: 'Use PUT /votantes/:identificacion para actualizar datos, o POST /capturas para reportar variantes por líder'
         });
       }
 
-      // Insertar nuevo votante
+      // Insertar nuevo votante canónico (sin lider_identificacion)
       await connection.execute(
         `INSERT INTO votantes
          (identificacion, nombre, apellido, departamento, ciudad, barrio, direccion, celular, email)
@@ -1258,35 +1277,11 @@ app.post('/votantes', async (req, res) => {
         ]
       );
 
-      // Si se proporciona líder, crear asignación
-      if (lider_identificacion) {
-        // Verificar que el líder existe
-        const [liderExists] = await connection.execute(
-          'SELECT COUNT(*) as count FROM lideres WHERE identificacion = ?',
-          [lider_identificacion]
-        );
-
-        if (liderExists[0].count === 0) {
-          await connection.rollback();
-          return res.status(404).json({ error: 'Líder no encontrado' });
-        }
-
-        // Crear asignación (el trigger seteará first_lider automáticamente)
-        await connection.execute(
-          'INSERT INTO votante_lider (votante_identificacion, lider_identificacion, assigned_by_user_id) VALUES (?, ?, ?)',
-          [identificacion, lider_identificacion, req.userId]
-        );
-        asignacionCreada = true;
-      }
-
       await connection.commit();
       res.status(201).json({
-        message: asignacionCreada
-          ? 'Votante creado y asignado al líder con éxito'
-          : 'Votante creado con éxito',
-        votante_creado: true,
-        asignacion_creada: asignacionCreada,
-        nota: !lider_identificacion ? 'Para asignar líder, usar el endpoint POST /asignaciones o incluir lider_identificacion en el body' : null
+        message: 'Votante canónico creado con éxito',
+        identificacion,
+        nota: 'Para asignar líderes, use POST /asignaciones o POST /capturas'
       });
     } catch (error) {
       await connection.rollback();
@@ -1472,6 +1467,324 @@ app.delete('/votantes/bulk', async (req, res) => {
   }
 });
 
+
+// ==============================
+//    CAPTURAS (STAGING CRUDO)
+// ==============================
+
+// POST /capturas - Ingesta de datos reportados por líderes (staging)
+// El trigger tr_capturas_after_insert se encargará automáticamente de:
+// - Crear votante canónico si no existe
+// - Crear asignación N:M en votante_lider
+// - Crear variante en votante_variantes
+// - Generar incidencias (DUPLICIDAD_CON_SI_MISMO, DUPLICIDAD_LIDER, CONFLICTO_DATOS)
+app.post('/capturas', async (req, res) => {
+  const connection = await db.getConnection();
+  try {
+    const {
+      lider_identificacion,
+      identificacion_reportada,
+      nombre_reportado = '',
+      apellido_reportado = '',
+      departamento_reportado = '',
+      ciudad_reportada = '',
+      barrio_reportado = '',
+      direccion_reportada = '',
+      zona_reportada = '',
+      puesto_reportado = '',
+      mesa_reportada = '',
+      direccion_puesto_reportada = '',
+      celular_reportado = '',
+      email_reportado = ''
+    } = req.body;
+
+    // Validaciones básicas
+    if (!lider_identificacion) {
+      return res.status(400).json({ error: 'lider_identificacion es requerido' });
+    }
+    if (!identificacion_reportada) {
+      return res.status(400).json({ error: 'identificacion_reportada es requerido' });
+    }
+
+    await connection.beginTransaction();
+
+    // Verificar que el líder existe
+    const [liderExists] = await connection.execute(
+      'SELECT COUNT(*) as count FROM lideres WHERE identificacion = ?',
+      [lider_identificacion]
+    );
+
+    if (liderExists[0].count === 0) {
+      await connection.rollback();
+      return res.status(404).json({ error: 'Líder no encontrado' });
+    }
+
+    // Calcular hash de datos para detección de duplicados exactos
+    const datosParaHash = [
+      nombre_reportado,
+      apellido_reportado,
+      departamento_reportado,
+      ciudad_reportada,
+      barrio_reportado,
+      direccion_reportada,
+      celular_reportado,
+      email_reportado
+    ].join('|').toUpperCase();
+
+    const crypto = require('crypto');
+    const hash_datos = crypto.createHash('md5').update(datosParaHash).digest('hex');
+
+    // Insertar captura (el trigger se encargará de todo el procesamiento automático)
+    const [result] = await connection.execute(
+      `INSERT INTO capturas_votante (
+        lider_identificacion,
+        identificacion_reportada,
+        nombre_reportado,
+        apellido_reportado,
+        departamento_reportado,
+        ciudad_reportada,
+        barrio_reportado,
+        direccion_reportada,
+        zona_reportada,
+        puesto_reportado,
+        mesa_reportada,
+        direccion_puesto_reportada,
+        celular_reportado,
+        email_reportado,
+        hash_datos,
+        created_by_user_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        lider_identificacion,
+        identificacion_reportada,
+        nombre_reportado.toUpperCase(),
+        apellido_reportado.toUpperCase(),
+        departamento_reportado.toUpperCase(),
+        ciudad_reportada.toUpperCase(),
+        barrio_reportado.toUpperCase(),
+        direccion_reportada.toUpperCase(),
+        zona_reportada.toUpperCase(),
+        puesto_reportado.toUpperCase(),
+        mesa_reportada.toUpperCase(),
+        direccion_puesto_reportada.toUpperCase(),
+        celular_reportado.toUpperCase(),
+        email_reportado.toUpperCase(),
+        hash_datos,
+        req.userId
+      ]
+    );
+
+    const capturaId = result.insertId;
+
+    // Obtener información de la captura procesada y posibles incidencias generadas
+    const [capturaInfo] = await connection.execute(
+      `SELECT estado, canonical_identificacion FROM capturas_votante WHERE id = ?`,
+      [capturaId]
+    );
+
+    const [incidenciasGeneradas] = await connection.execute(
+      `SELECT tipo, detalle FROM incidencias
+       WHERE votante_identificacion = ?
+       AND created_at >= NOW() - INTERVAL 5 SECOND
+       ORDER BY created_at DESC`,
+      [identificacion_reportada]
+    );
+
+    await connection.commit();
+
+    res.status(201).json({
+      message: 'Captura procesada con éxito',
+      captura_id: capturaId,
+      lider_identificacion,
+      identificacion_reportada,
+      canonical_identificacion: capturaInfo[0]?.canonical_identificacion,
+      estado: capturaInfo[0]?.estado,
+      incidencias_generadas: incidenciasGeneradas.length > 0 ? incidenciasGeneradas : null,
+      nota: 'El trigger automático ha procesado: creación de canónico (si aplica), asignación N:M, variante y detección de incidencias'
+    });
+  } catch (error) {
+    await connection.rollback();
+
+    // Manejo especial para duplicados exactos (UNIQUE constraint)
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(400).json({
+        error: 'Captura duplicada exacta',
+        mensaje: 'Este líder ya reportó exactamente los mismos datos para este votante',
+        tipo_incidencia: 'DUPLICIDAD_CON_SI_MISMO'
+      });
+    }
+
+    res.status(500).json({ error: error.message });
+  } finally {
+    connection.release();
+  }
+});
+
+// GET /capturas - Consultar capturas con filtros
+app.get('/capturas', async (req, res) => {
+  try {
+    const { estado, lider, cc, desde, hasta, limit = 100, offset = 0 } = req.query;
+
+    let sql = `
+      SELECT c.id, c.lider_identificacion, c.identificacion_reportada,
+             c.nombre_reportado, c.apellido_reportado,
+             c.departamento_reportado, c.ciudad_reportada, c.barrio_reportado,
+             c.direccion_reportada, c.celular_reportado, c.email_reportado,
+             c.canonical_identificacion, c.estado, c.created_at,
+             l.nombre AS lider_nombre, l.apellido AS lider_apellido,
+             u.username AS created_by
+      FROM capturas_votante c
+      LEFT JOIN lideres l ON l.identificacion = c.lider_identificacion
+      LEFT JOIN usuarios u ON u.id = c.created_by_user_id
+      WHERE 1=1
+    `;
+    const params = [];
+
+    if (estado) {
+      sql += ' AND c.estado = ?';
+      params.push(estado);
+    }
+
+    if (lider) {
+      sql += ' AND c.lider_identificacion = ?';
+      params.push(lider);
+    }
+
+    if (cc) {
+      sql += ' AND c.identificacion_reportada = ?';
+      params.push(cc);
+    }
+
+    if (desde) {
+      sql += ' AND c.created_at >= ?';
+      params.push(desde);
+    }
+
+    if (hasta) {
+      sql += ' AND c.created_at <= ?';
+      params.push(hasta);
+    }
+
+    sql += ' ORDER BY c.created_at DESC LIMIT ? OFFSET ?';
+    params.push(parseInt(limit), parseInt(offset));
+
+    const [rows] = await db.execute(sql, params);
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /variantes - Consultar variantes (foto por líder de cada votante canónico)
+app.get('/variantes', async (req, res) => {
+  try {
+    const { cc, lider, desde, hasta, current, limit = 100, offset = 0 } = req.query;
+
+    let sql = `
+      SELECT vv.id, vv.canonical_identificacion, vv.lider_identificacion,
+             vv.captura_id, vv.nombre_reportado, vv.apellido_reportado,
+             vv.departamento_reportado, vv.ciudad_reportada, vv.barrio_reportado,
+             vv.direccion_reportada, vv.celular_reportado, vv.email_reportado,
+             vv.is_current, vv.created_at,
+             v.nombre AS canonical_nombre, v.apellido AS canonical_apellido,
+             l.nombre AS lider_nombre, l.apellido AS lider_apellido,
+             u.username AS created_by
+      FROM votante_variantes vv
+      LEFT JOIN votantes v ON v.identificacion = vv.canonical_identificacion
+      LEFT JOIN lideres l ON l.identificacion = vv.lider_identificacion
+      LEFT JOIN usuarios u ON u.id = vv.created_by_user_id
+      WHERE 1=1
+    `;
+    const params = [];
+
+    if (cc) {
+      sql += ' AND vv.canonical_identificacion = ?';
+      params.push(cc);
+    }
+
+    if (lider) {
+      sql += ' AND vv.lider_identificacion = ?';
+      params.push(lider);
+    }
+
+    if (current !== undefined) {
+      sql += ' AND vv.is_current = ?';
+      params.push(parseInt(current));
+    }
+
+    if (desde) {
+      sql += ' AND vv.created_at >= ?';
+      params.push(desde);
+    }
+
+    if (hasta) {
+      sql += ' AND vv.created_at <= ?';
+      params.push(hasta);
+    }
+
+    sql += ' ORDER BY vv.created_at DESC LIMIT ? OFFSET ?';
+    params.push(parseInt(limit), parseInt(offset));
+
+    const [rows] = await db.execute(sql, params);
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /variantes/metricas - Métricas de calidad de datos por líder
+app.get('/variantes/metricas', async (req, res) => {
+  try {
+    const { lider } = req.query;
+
+    // Métricas generales
+    let sql = `
+      SELECT
+        lider_identificacion,
+        COUNT(DISTINCT canonical_identificacion) AS votantes_reales,
+        COUNT(*) AS total_variantes,
+        COUNT(*) - COUNT(DISTINCT canonical_identificacion) AS duplicados_con_si_mismo,
+        l.nombre AS lider_nombre,
+        l.apellido AS lider_apellido
+      FROM votante_variantes vv
+      LEFT JOIN lideres l ON l.identificacion = vv.lider_identificacion
+    `;
+    const params = [];
+
+    if (lider) {
+      sql += ' WHERE vv.lider_identificacion = ?';
+      params.push(lider);
+    }
+
+    sql += ' GROUP BY lider_identificacion, l.nombre, l.apellido';
+    sql += ' ORDER BY votantes_reales DESC';
+
+    const [metricas] = await db.execute(sql, params);
+
+    // Votantes duplicados entre líderes
+    const [duplicadosEntreLideres] = await db.execute(`
+      SELECT canonical_identificacion,
+             COUNT(DISTINCT lider_identificacion) AS num_lideres,
+             GROUP_CONCAT(DISTINCT lider_identificacion ORDER BY lider_identificacion) AS lideres
+      FROM votante_variantes
+      ${lider ? 'WHERE lider_identificacion = ?' : ''}
+      GROUP BY canonical_identificacion
+      HAVING COUNT(DISTINCT lider_identificacion) > 1
+      ORDER BY num_lideres DESC
+      LIMIT 100
+    `, lider ? [lider] : []);
+
+    res.json({
+      metricas_por_lider: metricas,
+      duplicados_entre_lideres: {
+        total: duplicadosEntreLideres.length,
+        casos: duplicadosEntreLideres
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // ==============================
 //        ASIGNACIONES (N:M)
